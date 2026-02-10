@@ -19,7 +19,7 @@ class CANDriver(Node):
         self.declare_parameter('esc_count', 8)
         self.declare_parameter('command_rate_hz', 50.0)
         self.declare_parameter('discovery_time_sec', 5.0)
-        self.declare_parameter('dna_db_path', '/tauv-mono/ros_ws/src/tauv_vehicle/tauv_vehicle/dronecan_dna.db')
+        self.declare_parameter('dna_db_path', '/tauv-mono/ros_ws/src/tauv_drivers/tauv_dronecan/dronecan_dna.db')
         
         interface = self.get_parameter('interface').value
         node_id = self.get_parameter('node_id').value
@@ -132,16 +132,21 @@ class CANDriver(Node):
 
     def _on_node_status(self, event):
         node_id = event.transfer.source_node_id
+        # print(f'Node {node_id} status update received')
         
         if node_id not in self.discovered_escs and node_id != self.dronecan_node.node_id:
             # Request node info to identify if it's an ESC
             def callback(event):
+                
                 if event and event.response:
                     name = bytes(event.response.name).decode().rstrip('\x00')
+
+                    print(f'Node {node_id} responded with name: {name})')
+                    # self.get_logger().info(f'Found ESC {node_id}: {name}')
+
                     if 'nanodrive' in name.lower(): #see how many nanodrives we have
                         self.discovered_escs.append(node_id)
                         self.discovered_escs.sort()
-                        self.get_logger().info(f'Found ESC {node_id}: {name}')
             
             self.dronecan_node.request(
                 dronecan.uavcan.protocol.GetNodeInfo.Request(),
