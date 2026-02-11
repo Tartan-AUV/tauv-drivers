@@ -67,11 +67,21 @@ def generate_launch_description():
         output='screen',
         parameters=[{'dvl_ip_address': '192.168.194.95'}]
     )
+    foxglove_bridge = Node(
+        package='foxglove_bridge',
+        executable='foxglove_bridge',
+        name='foxglove_bridge',
+        parameters=[{
+            'port': 8765,
+            'address': '0.0.0.0' 
+        }]
+    )
 
     # 4. Add Nodes to Launch Description
     ld.add_action(depth_node)
     ld.add_action(dronecan_node)
     ld.add_action(xsens_node)
-    # ld.add_action(dvl_node)
+    ld.add_action(dvl_node)
+    ld.add_action(foxglove_bridge)
 
     return ld
