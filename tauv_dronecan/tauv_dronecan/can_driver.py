@@ -125,7 +125,7 @@ class CANDriver(Node):
         telemetry_msg.voltage = msg.voltage
         telemetry_msg.current = msg.current
         telemetry_msg.temperature = msg.temperature - 273.15 if msg.temperature > 0 else 0
-        telemetry_msg.fault_code = 0 # there is no fault code in Status message but is one in the ESC Telemetry msg
+        telemetry_msg.fault_code = msg.error_count
 
         self.telemetry_pub.publish(telemetry_msg)
 
@@ -155,21 +155,24 @@ class CANDriver(Node):
             )
     
     def _thruster_callback(self, msg):
-        thruster_index = msg.enable  
-        throttle = msg.throttle     
         
-        if 0 <= thruster_index < self.esc_count:
-            self.throttles[thruster_index] = max(-1.0, min(1.0, throttle))
-        else:
-            self.get_logger().warn(f'Invalid thruster index: {thruster_index}')
-    
+        if(len(msg.thrust) != self.esc_count):
+            self.get_logger().warn(f'Received thrust array of length {len(msg.thrust)}, expected {self.esc_count}')
+            return
+        if(!msg.enable):
+            self.disarm()
+            return
+        
+        self.armed = True
+        self.throttles = msg.thrust
+
     def _send_commands(self):
 
         arming_msg = dronecan.uavcan.equipment.safety.ArmingStatus(
             status=255 if self.armed else 0
         )
         self.dronecan_node.broadcast(arming_msg)
-
+    
         raw_values = [int(t * 8191) for t in self.throttles]
         cmd_msg = dronecan.uavcan.equipment.esc.RawCommand(cmd=raw_values)
         self.dronecan_node.broadcast(cmd_msg)
@@ -226,7 +229,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
