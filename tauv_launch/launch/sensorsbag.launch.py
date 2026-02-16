@@ -77,7 +77,19 @@ def generate_launch_description():
             'address': '0.0.0.0' 
         }]
     )
-  
+    timestamp = datetime.now().strftime('%Y.%m.%d_%H.%M.%S')
+    bag_name = f"osprey_{timestamp}"
+    recording = ExecuteProcess(            
+        cmd=[
+            'ros2',
+            'bag',
+            'record',
+            '-a',
+            '-o',
+            'rosbag_' + bag_name,
+        ],
+        output='screen',
+    )
 
     # 4. Add Nodes to Launch Description
     ld.add_action(depth_node)
@@ -85,5 +97,6 @@ def generate_launch_description():
     ld.add_action(xsens_node)
     ld.add_action(dvl_node)
     ld.add_action(foxglove_bridge)
+    ld.add_action(recording)
 
     return ld
