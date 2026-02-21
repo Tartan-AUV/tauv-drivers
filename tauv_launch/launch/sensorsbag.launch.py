@@ -85,8 +85,10 @@ def generate_launch_description():
             'bag',
             'record',
             '-a',
+            '-s',
+            'mcap',
             '-o',
-            'rosbag_' + bag_name,
+            Path("/tauv-mono/ros_ws/bags") / f"rosbag_{bag_name}",
         ],
         output='screen',
     )
