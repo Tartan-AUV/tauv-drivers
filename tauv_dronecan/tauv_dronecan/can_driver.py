@@ -159,7 +159,7 @@ class CANDriver(Node):
         if(len(msg.thrust) != self.esc_count):
             self.get_logger().warn(f'Received thrust array of length {len(msg.thrust)}, expected {self.esc_count}')
             return
-        if(!msg.enable):
+        if(not msg.armed):
             self.disarm()
             return
         
