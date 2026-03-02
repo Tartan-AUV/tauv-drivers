@@ -1,0 +1,6 @@
+[submodule "dvl_msgs"]
+	path = dvl_msgs
+	url = https://github.com/paagutie/dvl_msgs.git
+[submodule "dvl-a50"]
+	path = dvl-a50
+	url = https://github.com/paagutie/dvl-a50.git
