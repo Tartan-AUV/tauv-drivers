@@ -78,7 +78,6 @@ def generate_launch_description():
         }]
     )
     timestamp = datetime.now().strftime('%Y.%m.%d_%H.%M.%S')
-    bag_name = f"osprey_{timestamp}"
     recording = ExecuteProcess(            
         cmd=[
             'ros2',
@@ -88,7 +87,7 @@ def generate_launch_description():
             '-s',
             'mcap',
             '-o',
-            Path("/tauv-mono/ros_ws/bags") / f"rosbag_{bag_name}",
+            Path("/tauv-mono/ros_ws/bags") / f"rosbag_osprey_{timestamp}",
         ],
         output='screen',
     )
