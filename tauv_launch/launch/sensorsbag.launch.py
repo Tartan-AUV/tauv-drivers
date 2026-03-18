@@ -47,8 +47,8 @@ def generate_launch_description():
             'node_id': 12,
             'bitrate': 1000000,
             'esc_count': 8,
-            'command_rate_hz': 50.0,
-            'discovery_time_sec': 5.0,
+            'command_rate_hz': 100.0,
+            'discovery_time_sec': 15.0,
             'dna_db_path': dronecan_db_path
         }]
     )
