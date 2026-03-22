@@ -151,6 +151,19 @@ def generate_launch_description():
         output='screen'
     )
 
+    controller = Node(
+        package='tauv_autonomy',
+        executable='controller',
+        name='controller',
+        output='screen',
+    )
+    thruster_forces = Node(
+        package='tauv_autonomy',
+        executable='thruster_forces',
+        name='thruster_forces',
+        output='screen',
+    )
+
     # 4. Add Nodes to Launch Description
     ld.add_action(depth_node)
     ld.add_action(dronecan_node)
@@ -165,5 +178,7 @@ def generate_launch_description():
     ld.add_action(imu_frame)
     ld.add_action(depth_frame)
     ld.add_action(dvl_frame)
+    ld.add_action(controller)
+    ld.add_action(thruster_forces)
 
     return ld

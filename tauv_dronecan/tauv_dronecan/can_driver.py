@@ -17,17 +17,9 @@ from std_msgs.msg import Float32MultiArray
 import dronecan
 import time
 from tauv_dronecan.force_to_gain import force_voltage_to_gain
+from tauv_dronecan.mapping import mapping
 
 from tauv_msgs.msg import ThrusterSetpoint,EscTelemetry
-
-
-# Maps expected thruster index (ThrusterSetpoint.msg) to DroneCAN ESC index
-# Expected[THRUSTER_REMAP[i]] = Default[i]
-# Default: [FRV, BlV, BRV, FRH, FlV, BRH, FLH, BLH]
-# Expected:  [FRH, FLH, BRH, BLH, FRV, FLV, BRV, BLV]
-# THRUSTER_REMAP = [3, 6, 5, 7, 0, 4, 2, 1]
-THRUSTER_REMAP = [4, 7, 6, 0, 5, 2, 1, 3] 
-THRUSTER_SIGNS = [1, -1, -1, 1, -1, 1, 1, 1] # Set to -1 for thrusters that need reversed direction
 
 
 class CANDriver(Node):
@@ -55,6 +47,17 @@ class CANDriver(Node):
         self.armed = False
         self.discovered_escs = []
         self.telemetry = {}
+
+        # Build remap and sign arrays from mapping.py
+        # dronecan_to_global[dronecan_index] = global_index
+        # dronecan_signs[dronecan_index] = sign for that thruster
+        self.dronecan_to_global = [0] * self.esc_count
+        self.dronecan_signs = [1] * self.esc_count
+        for name, info in mapping.items():
+            d_idx = info["dronecan_index"]
+            g_idx = info["global_index"]
+            self.dronecan_to_global[d_idx] = g_idx
+            self.dronecan_signs[d_idx] = -1 if info["is_reverse"] else 1
 
         self.telemetry_pub = self.create_publisher(
             EscTelemetry,
@@ -179,15 +182,16 @@ class CANDriver(Node):
             )
     
     def _remap_thrusts(self, autonomy_thrusts):
-        out= [
-            autonomy_thrusts[expected_idx] * THRUSTER_SIGNS[expected_idx] 
-            for expected_idx in THRUSTER_REMAP
+        # Remap from global (autonomy) ordering to DroneCAN ESC ordering using mapping.py
+        # output[dronecan_index] = input[global_index] * sign
+        out = [
+            autonomy_thrusts[self.dronecan_to_global[d_idx]] * self.dronecan_signs[d_idx]
+            for d_idx in range(self.esc_count)
         ]
-        # now convert the forces to gains using the latest voltage telemetry
+        # Convert forces to gains using the latest voltage telemetry
         voltage = self.avg_esc_voltage()
-        
         gain_thrusts = [
-            force_voltage_to_gain(f, 16.0) for f in out
+            force_voltage_to_gain(f, voltage) for f in out
         ]
         self.get_logger().info(f"Remapped thrusts: {out} -> Gains: {gain_thrusts} at V={voltage:.2f}")
         return gain_thrusts
@@ -212,7 +216,7 @@ class CANDriver(Node):
         )
         self.dronecan_node.broadcast(arming_msg)
                 
-        raw_values = [int(t * 8191) for t in self.throttles]
+        raw_values = [int(t * 1) for t in self.throttles]
         cmd_msg = dronecan.uavcan.equipment.esc.RawCommand(cmd=raw_values)
         self.dronecan_node.broadcast(cmd_msg)
     
