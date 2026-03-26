@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import SetEnvironmentVariable, ExecuteProcess
+from launch.actions import SetEnvironmentVariable, ExecuteProcess, TimerAction, LogInfo
 from launch_ros.actions import Node
 from datetime import datetime
 
@@ -24,6 +24,8 @@ def generate_launch_description():
         get_package_share_directory('tauv_dronecan'),
         'dronecan_dna.db'
     )
+    common_share_dir = Path(get_package_share_directory("tauv_core"))
+    common_ekf_file = common_share_dir / "config" / "ekfFUNNY.yaml"
 
     # 3. Define Nodes
 
@@ -92,6 +94,82 @@ def generate_launch_description():
         output='screen',
     )
 
+    ekf = TimerAction(
+        period=5.0,
+        actions=[
+            LogInfo(msg="Starting EKF filter node!!!!!!"),
+            Node(
+                package="robot_localization",
+                executable="ekf_node",
+                name="ekf_filter_node",
+                parameters=[str(common_ekf_file)],
+                output="screen",
+            ),
+        ],
+    )
+
+    imu_converter = Node(
+        package="tauv_core",
+        executable="imu_converter",
+        name="imu_converter",
+        output="screen",
+    )
+    depth_converter = Node(
+        package="tauv_core",
+        executable="depth_converter",
+        name="depth_converter",
+        output="screen",
+    )
+    dvl_converter = Node(
+        package="tauv_core",
+        executable="dvl_converter",
+        name="dvl_converter",
+        output="screen",
+    )
+    imu_frame = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_link_to_imu',
+        arguments=['0', '0', '0', '0', '0', '0', 'os/base_link', 'imu_link_xsens'],
+        parameters=[{'use_sim_time': True}],
+        output='screen'
+    )
+    depth_frame = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_link_to_depth',
+        arguments=['0', '0', '0', '0', '0', '0', 'os/base_link', 'depth_link'],
+        parameters=[{'use_sim_time': True}],
+        output='screen'
+    )
+    dvl_frame = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_link_to_dvl',
+        arguments=['0', '0', '0', '1.5708', '0', '-3.14159', 'os/base_link', 'dvl_link'],
+        parameters=[{'use_sim_time': True}],
+        output='screen'
+    )
+
+    controller = Node(
+        package='tauv_autonomy',
+        executable='controller',
+        name='controller',
+        output='screen',
+    )
+    thruster_forces = Node(
+        package='tauv_autonomy',
+        executable='thruster_forces',
+        name='thruster_forces',
+        output='screen',
+    )
+    thruster_forces = Node(
+        package='tauv_autonomy',
+        executable='thruster_rpms',
+        name='thruster_rpms',
+        output='screen',
+    )
+
     # 4. Add Nodes to Launch Description
     ld.add_action(depth_node)
     ld.add_action(dronecan_node)
@@ -99,5 +177,14 @@ def generate_launch_description():
     ld.add_action(dvl_node)
     ld.add_action(foxglove_bridge)
     ld.add_action(recording)
+    ld.add_action(ekf)
+    ld.add_action(imu_converter)
+    ld.add_action(depth_converter)
+    ld.add_action(dvl_converter)
+    ld.add_action(imu_frame)
+    ld.add_action(depth_frame)
+    ld.add_action(dvl_frame)
+    ld.add_action(controller)
+    ld.add_action(thruster_forces)
 
     return ld

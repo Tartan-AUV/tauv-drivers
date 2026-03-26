@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
+
+"""
+TAKES IN /thruster_forces (tauv_msgs/ThrusterSetpoint) and sends appropriate commands to ESCs over DroneCAN
+the mapping is based on this blue robotics image, the rest is dealt with internally https://discuss.bluerobotics.com/t/custom-thruster-configuration/4384
+
+uses force_to_gain.py to convert from forces to ESC gain values, which are then sent as raw commands to the ESCs.
+
+"""
+
+
+
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 import dronecan
 import time
+import numpy as np
+from tauv_dronecan.force_to_gain import rpm_to_gain
+from tauv_dronecan.mapping import mapping
 
 from tauv_msgs.msg import ThrusterSetpoint,EscTelemetry
 
@@ -33,6 +48,17 @@ class CANDriver(Node):
         self.armed = False
         self.discovered_escs = []
         self.telemetry = {}
+
+        # Build remap and sign arrays from mapping.py
+        # dronecan_to_global[dronecan_index] = global_index
+        # dronecan_signs[dronecan_index] = sign for that thruster
+        self.dronecan_to_global = [0] * self.esc_count
+        self.dronecan_signs = [1] * self.esc_count
+        for name, info in mapping.items():
+            d_idx = info["dronecan_index"]
+            g_idx = info["global_index"]
+            self.dronecan_to_global[d_idx] = g_idx
+            self.dronecan_signs[d_idx] = -1 if info["is_reverse"] else 1
 
         self.telemetry_pub = self.create_publisher(
             EscTelemetry,
@@ -77,7 +103,7 @@ class CANDriver(Node):
         
         self.get_logger().info("Discovering ESC nodes...")
         start_time = time.time()
-        while (time.time() - start_time) < discovery_time:
+        while ((time.time() - start_time) < discovery_time) or (len(self.discovered_escs) < self.esc_count):
             try:
                 self.dronecan_node.spin(timeout=0.01)
             except dronecan.transport.TransferError:
@@ -93,12 +119,10 @@ class CANDriver(Node):
         
         self.thruster_sub = self.create_subscription(
             ThrusterSetpoint,  # Replace with actual message type
-            'thruster_setpoint',
+            'thruster_rpms',
             self._thruster_callback,
             10
         )
-        
-        
         
         self.command_timer = self.create_timer(1.0 / self.command_rate_hz, self._send_commands)
         self.dronecan_timer = self.create_timer(0.001, self._spin_dronecan)
@@ -129,6 +153,10 @@ class CANDriver(Node):
 
         self.telemetry_pub.publish(telemetry_msg)
 
+    def avg_esc_voltage(self):
+        if not self.telemetry:
+            return 16.0  # Default voltage if no telemetry available
+        return sum(t['voltage'] for t in self.telemetry.values()) / len(self.telemetry)
 
     def _on_node_status(self, event):
         node_id = event.transfer.source_node_id
@@ -154,17 +182,38 @@ class CANDriver(Node):
                 callback
             )
     
+    def _remap_thrusts(self, autonomy_thrusts):
+        #make autonomy thrusts a normal array
+        if isinstance(autonomy_thrusts, Float32MultiArray):
+            autonomy_thrusts = list(autonomy_thrusts.data)
+        elif isinstance(autonomy_thrusts, np.ndarray):
+            autonomy_thrusts = autonomy_thrusts.tolist()   
+            
+        voltage = self.avg_esc_voltage()
+        gain_thrusts = [
+            rpm_to_gain(f, voltage) for f in autonomy_thrusts
+        ]
+        out = [
+            gain_thrusts[self.dronecan_to_global[d_idx]] * self.dronecan_signs[d_idx]
+            for d_idx in range(self.esc_count)
+        ]
+        # Convert forces to gains using the latest voltage telemetry
+        self.get_logger().info(f"type of autonomy_thrusts: {type(autonomy_thrusts)}, data: {autonomy_thrusts}")
+        self.get_logger().info(f"Remapped thrusts: {autonomy_thrusts} -> Gains: {gain_thrusts} at V={voltage:.2f}")
+        return out
+
     def _thruster_callback(self, msg):
-        
+
         if(len(msg.thrust) != self.esc_count):
             self.get_logger().warn(f'Received thrust array of length {len(msg.thrust)}, expected {self.esc_count}')
             return
         if(not msg.armed):
+            self.throttles = self._remap_thrusts(msg.thrust)
             self.disarm()
             return
-        
+
         self.armed = True
-        self.throttles = msg.thrust
+        self.throttles = self._remap_thrusts(msg.thrust)
 
     def _send_commands(self):
 
@@ -172,8 +221,8 @@ class CANDriver(Node):
             status=255 if self.armed else 0
         )
         self.dronecan_node.broadcast(arming_msg)
-    
-        raw_values = [int(t * 8191) for t in self.throttles]
+                
+        raw_values = [int(t * 1) for t in self.throttles]
         cmd_msg = dronecan.uavcan.equipment.esc.RawCommand(cmd=raw_values)
         self.dronecan_node.broadcast(cmd_msg)
     
