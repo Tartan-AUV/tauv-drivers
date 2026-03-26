@@ -1,5 +1,6 @@
 from setuptools import find_packages, setup
-
+import os
+import glob
 package_name = 'tauv_dronecan'
 
 setup(
@@ -11,6 +12,8 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name, ['dronecan_dna.db']),
+        (os.path.join('share', package_name, 'config'),glob.glob('config/*.yaml')),
+
     ],
     install_requires=['setuptools'],
     zip_safe=True,

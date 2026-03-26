@@ -163,6 +163,12 @@ def generate_launch_description():
         name='thruster_forces',
         output='screen',
     )
+    thruster_forces = Node(
+        package='tauv_autonomy',
+        executable='thruster_rpms',
+        name='thruster_rpms',
+        output='screen',
+    )
 
     # 4. Add Nodes to Launch Description
     ld.add_action(depth_node)

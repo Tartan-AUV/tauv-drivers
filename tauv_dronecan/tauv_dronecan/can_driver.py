@@ -16,7 +16,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 import dronecan
 import time
-from tauv_dronecan.force_to_gain import force_voltage_to_gain
+import numpy as np
+from tauv_dronecan.force_to_gain import rpm_to_gain
 from tauv_dronecan.mapping import mapping
 
 from tauv_msgs.msg import ThrusterSetpoint,EscTelemetry
@@ -118,7 +119,7 @@ class CANDriver(Node):
         
         self.thruster_sub = self.create_subscription(
             ThrusterSetpoint,  # Replace with actual message type
-            'thruster_forces',
+            'thruster_rpms',
             self._thruster_callback,
             10
         )
@@ -182,19 +183,24 @@ class CANDriver(Node):
             )
     
     def _remap_thrusts(self, autonomy_thrusts):
-        # Remap from global (autonomy) ordering to DroneCAN ESC ordering using mapping.py
-        # output[dronecan_index] = input[global_index] * sign
+        #make autonomy thrusts a normal array
+        if isinstance(autonomy_thrusts, Float32MultiArray):
+            autonomy_thrusts = list(autonomy_thrusts.data)
+        elif isinstance(autonomy_thrusts, np.ndarray):
+            autonomy_thrusts = autonomy_thrusts.tolist()   
+            
+        voltage = self.avg_esc_voltage()
+        gain_thrusts = [
+            rpm_to_gain(f, voltage) for f in autonomy_thrusts
+        ]
         out = [
-            autonomy_thrusts[self.dronecan_to_global[d_idx]] * self.dronecan_signs[d_idx]
+            gain_thrusts[self.dronecan_to_global[d_idx]] * self.dronecan_signs[d_idx]
             for d_idx in range(self.esc_count)
         ]
         # Convert forces to gains using the latest voltage telemetry
-        voltage = self.avg_esc_voltage()
-        gain_thrusts = [
-            force_voltage_to_gain(f, voltage) for f in out
-        ]
-        self.get_logger().info(f"Remapped thrusts: {out} -> Gains: {gain_thrusts} at V={voltage:.2f}")
-        return gain_thrusts
+        self.get_logger().info(f"type of autonomy_thrusts: {type(autonomy_thrusts)}, data: {autonomy_thrusts}")
+        self.get_logger().info(f"Remapped thrusts: {autonomy_thrusts} -> Gains: {gain_thrusts} at V={voltage:.2f}")
+        return out
 
     def _thruster_callback(self, msg):
 
