@@ -126,6 +126,29 @@ def generate_launch_description():
         name="dvl_converter",
         output="screen",
     )
+    watchdog_params = {
+        'esc_topic': 'esc_telemetry',
+        'imu_topic': 'os/sensors/imu_xsens',
+        'system_state_topic': 'watchdog/system_state',
+        'heartbeat_frequency_hz': 1.0,
+        'esc_timeout_s': 1.0,
+        'stale_startup_grace_s': 5.0,
+        'warning_temperature_c': 70.0,
+        'error_temperature_c': 90.0,
+        'error_voltage_v': 12.0,
+        'roll_threshold_deg': 45.0,
+        'pitch_threshold_deg': 45.0,
+        'angular_velocity_threshold_radps': 5.0,
+        'expected_esc_ids': [0, 1, 2, 3, 4, 5, 6, 7],
+    }
+
+    # watchdog node
+    watchdog = Node(
+        package="tauv_core",
+        executable="watchdog",
+        name="watchdog",
+        output="screen",
+        parameters=[watchdog_params])
     imu_frame = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -175,6 +198,7 @@ def generate_launch_description():
     ld.add_action(imu_converter)
     ld.add_action(depth_converter)
     ld.add_action(dvl_converter)
+    ld.add_action(watchdog)
     ld.add_action(imu_frame)
     ld.add_action(depth_frame)
     ld.add_action(dvl_frame)
