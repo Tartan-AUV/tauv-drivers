@@ -132,14 +132,14 @@ def generate_launch_description():
         'system_state_topic': 'watchdog/system_state',
         'heartbeat_frequency_hz': 1.0,
         'esc_timeout_s': 1.0,
-        'stale_startup_grace_s': 5.0,
+        'stale_startup_grace_s': 30.0,
         'warning_temperature_c': 70.0,
         'error_temperature_c': 90.0,
         'error_voltage_v': 12.0,
         'roll_threshold_deg': 45.0,
         'pitch_threshold_deg': 45.0,
         'angular_velocity_threshold_radps': 5.0,
-        'expected_esc_ids': [0, 1, 2, 3, 4, 5, 6, 7],
+        'expected_esc_ids': [100, 101, 102, 103, 104, 105, 106, 107],
     }
 
     # watchdog node
