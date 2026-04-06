@@ -86,7 +86,7 @@ Node("dvl_a50_node")
     /*
      * Disable transducer operation to limit sensor heating out of water.
      */
-    this->set_json_parameter("acoustic_enabled", "false");
+    this->set_json_parameter("acoustic_enabled", "true");
     usleep(2000);
 
 }

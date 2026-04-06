@@ -130,7 +130,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_link_to_imu',
-        arguments=['0', '0', '0', '0', '0', '0', 'os/base_link', 'imu_link_xsens'],
+        arguments=['0', '0', '0', '3.14159', '0', '0', 'os/base_link', 'imu_link_xsens'], # Yaw Pitch Roll
         parameters=[{'use_sim_time': True}],
         output='screen'
     )
@@ -146,7 +146,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_link_to_dvl',
-        arguments=['0', '0', '0', '1.5708', '0', '-3.14159', 'os/base_link', 'dvl_link'],
+        arguments=['0', '0', '0', '0', '0', '1.5708', 'os/base_link', 'dvl_link'],
         parameters=[{'use_sim_time': True}],
         output='screen'
     )
@@ -163,7 +163,7 @@ def generate_launch_description():
         name='thruster_forces',
         output='screen',
     )
-    thruster_forces = Node(
+    thruster_rpms = Node(
         package='tauv_autonomy',
         executable='thruster_rpms',
         name='thruster_rpms',
@@ -186,5 +186,6 @@ def generate_launch_description():
     ld.add_action(dvl_frame)
     ld.add_action(controller)
     ld.add_action(thruster_forces)
+    ld.add_action(thruster_rpms)
 
     return ld

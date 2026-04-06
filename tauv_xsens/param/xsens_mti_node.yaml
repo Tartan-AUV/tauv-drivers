@@ -131,7 +131,7 @@
         pub_quaternion: true
         pub_euler: false
         pub_free_acceleration: false
-        pub_angular_velocity: false
+        pub_angular_velocity: true
         pub_acceleration: true
         pub_dq: false
         pub_dv: false
