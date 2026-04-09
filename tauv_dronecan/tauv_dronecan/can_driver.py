@@ -13,11 +13,11 @@ uses force_to_gain.py to convert from forces to ESC gain values, which are then 
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray,String
 import dronecan
 import time
 import numpy as np
-from tauv_dronecan.force_to_gain import rpm_to_gain
+from tauv_dronecan.rpm_to_gain import rpm_to_gain
 from tauv_dronecan.mapping import mapping
 
 from tauv_msgs.msg import ThrusterSetpoint,EscTelemetry
@@ -45,6 +45,7 @@ class CANDriver(Node):
         dna_db_path = self.get_parameter('dna_db_path').value
         
         self.throttles = [0.0] * self.esc_count
+        self.BIGARM=True;
         self.armed = False
         self.discovered_escs = []
         self.telemetry = {}
@@ -123,6 +124,13 @@ class CANDriver(Node):
             self._thruster_callback,
             10
         )
+        self.watchdog_sub= self.create_subscription(
+            String,
+            'watchdog/system_state',
+            self._watchdog_callback,
+            10
+        )
+
         
         self.command_timer = self.create_timer(1.0 / self.command_rate_hz, self._send_commands)
         self.dronecan_timer = self.create_timer(0.001, self._spin_dronecan)
@@ -198,16 +206,24 @@ class CANDriver(Node):
             for d_idx in range(self.esc_count)
         ]
         # Convert forces to gains using the latest voltage telemetry
-        self.get_logger().info(f"type of autonomy_thrusts: {type(autonomy_thrusts)}, data: {autonomy_thrusts}")
-        self.get_logger().info(f"Remapped thrusts: {autonomy_thrusts} -> Gains: {gain_thrusts} at V={voltage:.2f}")
+        # self.get_logger().info(f"type of autonomy_thrusts: {type(autonomy_thrusts)}, data: {autonomy_thrusts}")
+        # self.get_logger().info(f"Remapped thrusts: {autonomy_thrusts} -> Gains: {gain_thrusts} at V={voltage:.2f}")
         return out
+
+    def _watchdog_callback(self, msg):
+        if msg.data == "OK":
+            self.get_logger().debug("Received OK from watchdog")
+            # self.BIGARM = True
+        else:
+            self.get_logger().warn(f"Unexpected watchdog message: {msg.data}")
+            self.BIGARM = False
 
     def _thruster_callback(self, msg):
 
         if(len(msg.thrust) != self.esc_count):
             self.get_logger().warn(f'Received thrust array of length {len(msg.thrust)}, expected {self.esc_count}')
             return
-        if(not msg.armed):
+        if(not msg.armed or not self.BIGARM):
             self.throttles = self._remap_thrusts(msg.thrust)
             self.disarm()
             return
@@ -218,7 +234,7 @@ class CANDriver(Node):
     def _send_commands(self):
 
         arming_msg = dronecan.uavcan.equipment.safety.ArmingStatus(
-            status=255 if self.armed else 0
+            status=255 if (self.armed and self.BIGARM) else 0
         )
         self.dronecan_node.broadcast(arming_msg)
                 

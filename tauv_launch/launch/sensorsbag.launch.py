@@ -2,12 +2,19 @@ import os
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import SetEnvironmentVariable, ExecuteProcess, TimerAction, LogInfo
+from launch.actions import SetEnvironmentVariable, ExecuteProcess, TimerAction, LogInfo, DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from datetime import datetime
 
 def generate_launch_description():
     ld = LaunchDescription()
+
+    ld.add_action(DeclareLaunchArgument(
+        'tune', 
+        default_value='False', 
+        description='Enable autotuning for the controller'
+    ))
 
     # 1. Global Logging Settings for Jetson Orin Performance
     # Forces logs to stdout and buffers them to save CPU cycles
@@ -127,19 +134,19 @@ def generate_launch_description():
         output="screen",
     )
     watchdog_params = {
-        'esc_topic': 'esc_telemetry',
+        'esc_topic': '/esc_telemetry',
         'imu_topic': 'os/sensors/imu_xsens',
         'system_state_topic': 'watchdog/system_state',
         'heartbeat_frequency_hz': 1.0,
         'esc_timeout_s': 1.0,
-        'stale_startup_grace_s': 5.0,
+        'stale_startup_grace_s': 30.0,
         'warning_temperature_c': 70.0,
         'error_temperature_c': 90.0,
         'error_voltage_v': 12.0,
-        'roll_threshold_deg': 45.0,
-        'pitch_threshold_deg': 45.0,
-        'angular_velocity_threshold_radps': 5.0,
-        'expected_esc_ids': [0, 1, 2, 3, 4, 5, 6, 7],
+        'roll_threshold_deg': 35.0,
+        'pitch_threshold_deg': 35.0,
+        'angular_velocity_threshold_radps': 3,
+        'expected_esc_ids': [100, 101, 102, 103, 104, 105, 106, 107],
     }
 
     # watchdog node
@@ -169,7 +176,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_link_to_dvl',
-        arguments=['0', '0', '0', '0', '0', '1.5708', 'os/base_link', 'dvl_link'],
+        arguments=['0', '0', '0', '-1.5708', '0.0', '3.14159', 'os/base_link', 'dvl_link'],
         parameters=[{'use_sim_time': True}],
         output='screen'
     )
@@ -178,6 +185,9 @@ def generate_launch_description():
         package='tauv_autonomy',
         executable='controller',
         name='controller',
+        parameters=[{
+            'tune': LaunchConfiguration('tune')
+        }],
         output='screen',
     )
     thruster_forces = Node(
