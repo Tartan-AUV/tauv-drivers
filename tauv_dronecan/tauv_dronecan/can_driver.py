@@ -214,6 +214,10 @@ class CANDriver(Node):
         if msg.data == "OK":
             self.get_logger().debug("Received OK from watchdog")
             # self.BIGARM = True
+        if msg.data == "RESET":
+            self.get_logger().debug("Received RESET from some cool person")
+            self.BIGARM = True
+        
         else:
             self.get_logger().warn(f"Unexpected watchdog message: {msg.data}")
             self.BIGARM = False

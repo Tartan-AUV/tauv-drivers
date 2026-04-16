@@ -12,7 +12,7 @@ def generate_launch_description():
     ld.add_action(SetEnvironmentVariable('RCUTILS_LOGGING_USE_STDOUT', '1'))
     ld.add_action(SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'))
 
-    parameters_file_path = Path(get_package_share_directory('xsens_mti_ros2_driver'), 'param', 'xsens_mti_node.yaml')
+    parameters_file_path = Path(get_package_share_directory('xsens_mti_ros2_driver'), 'param', 'xsens_main.yaml')
     xsens_mti_node = Node(
             package='xsens_mti_ros2_driver',
             executable='xsens_mti_node',

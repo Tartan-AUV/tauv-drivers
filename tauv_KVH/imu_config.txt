@@ -1,0 +1,53 @@
+KVH 1775 IMU — One-Time Configuration
+======================================
+
+These commands must be sent to the IMU once via a serial terminal (e.g. picocom)
+before running the ROS driver. Settings are stored in non-volatile memory on the
+device and persist across power cycles.
+
+Connection:
+  picocom -b 921600 --imap lfcrlf /dev/ttyUSB0
+
+Commands (type each line and press Enter):
+  =config,1
+  =outputfmt,B
+  =baud,921600
+  =dr,1000
+  =angunits,RAD
+  =angfmt,RATE
+  =linunits,METERS
+  =linfmt,ACCEL
+  =filttype,G,BUTTER
+  =filttype,A,BUTTER
+  =config,0
+
+What each command does:
+  =config,1         Enter configuration mode (required before any other =cmd)
+  =outputfmt,B      Switch to Format B packets (40-byte, includes µs timestamp)
+  =baud,921600      Confirm baud rate (921600 is the factory default)
+  =dr,1000          Output rate: 1000 Hz
+  =angunits,RAD     Angular units: radians (not degrees)
+  =angfmt,RATE      Angular format: rate (rad/s), NOT delta-angle
+  =linunits,METERS  Linear units: m/s²
+  =linfmt,ACCEL     Linear format: acceleration, NOT delta-velocity
+  =filttype,G,BUTTER Gyro filter: Butterworth (linear phase, better for integration)
+  =filttype,A,BUTTER Accel filter: Butterworth
+  =config,0         Exit configuration mode and resume streaming
+
+After =config,0 the IMU will begin streaming Format B at 1000 Hz immediately.
+Exit picocom with Ctrl-A then Ctrl-X before starting the ROS driver.
+
+FTDI Latency Timer (do once per boot, or add the udev rule below):
+  echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB*/latency_timer
+  (Default is 16 ms — this kills 1 kHz throughput. Must be 1 ms.)
+
+Recommended udev rules (save to /etc/udev/rules.d/99-kvh1775.rules):
+  # Stable symlink for the KVH 1775 IMU (replace <SERIAL> with your FTDI serial)
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
+    ATTRS{serial}=="<SERIAL>", SYMLINK+="kvh1775", MODE="0666", GROUP="dialout"
+
+  # Set FTDI latency to 1 ms automatically on plug-in
+  ACTION=="add", SUBSYSTEM=="usb-serial", ATTR{latency_timer}="1"
+
+To find your FTDI serial number:
+  udevadm info -a -n /dev/ttyUSB0 | grep serial
