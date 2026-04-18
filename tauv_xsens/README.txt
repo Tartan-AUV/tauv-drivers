@@ -1,3 +1,5 @@
+https://github.com/xsenssupport/Xsens_MTi_ROS_Driver_and_Ntrip_Client/tree/ros2
+
 =[ Xsens MTi driver for ROS2 ]============================================================
 
 Documentation:

@@ -1,7 +1,7 @@
 /*
- * Converts the output of the depth sensor into a Z position
+ *NOT USED ANYMOREREEE
  * and publishes it to the Odometry node
-*/
+ */
 
 #include "tauv_repackagers/depth_converter.h"
 
@@ -9,13 +9,12 @@
 // - Subscribes to raw depth data
 // - Publishes converted odometry messages
 DepthConverter::DepthConverter(std::string prefix) : Node("depth_converter"), prefix_(prefix) {
-     // Subscribe to raw depth measurements from the vehicle
-    sub_ = create_subscription<
-        tauv_msgs::msg::Depth>("/vehicle/depth",
-                                         rclcpp::SensorDataQoS(),
-                                         std::bind(&DepthConverter::depthCallback,
-                                                   this,
-                                                   std::placeholders::_1));
+    // Subscribe to raw depth measurements from the vehicle
+    sub_ = create_subscription<tauv_msgs::msg::Depth>("/vehicle/depth",
+                                                      rclcpp::SensorDataQoS(),
+                                                      std::bind(&DepthConverter::depthCallback,
+                                                                this,
+                                                                std::placeholders::_1));
     // Publish depth as a Z-position in Odometry format
     pub_ = create_publisher<nav_msgs::msg::Odometry>(prefix_ + "/sensors/depth", 10);
 }
@@ -27,7 +26,7 @@ void DepthConverter::depthCallback(const tauv_msgs::msg::Depth::SharedPtr msg) {
     // Create a new odometry message to store converted data
     nav_msgs::msg::Odometry odom;
 
-     // Copy timestamp and define coordinate frames
+    // Copy timestamp and define coordinate frames
     odom.header.stamp = msg->header.stamp;
     odom.header.frame_id = "odom";
     odom.child_frame_id = "depth_link";

@@ -1,9 +1,11 @@
+// NOT USED ANYMORE
+
 #pragma once
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
-#include <tauv_msgs/msg/depth.hpp>
 #include <string>
+#include <tauv_msgs/msg/depth.hpp>
 
 class DepthConverter : public rclcpp::Node {
    public:
@@ -11,7 +13,7 @@ class DepthConverter : public rclcpp::Node {
 
    private:
     void depthCallback(const tauv_msgs::msg::Depth::SharedPtr msg);
-    
+
     rclcpp::Subscription<tauv_msgs::msg::Depth>::SharedPtr sub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_;
 
