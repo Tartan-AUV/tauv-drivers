@@ -29,7 +29,7 @@ class KvhNode : public rclcpp::Node {
         accel_var_ = accel_nd * accel_nd * bw;
 
         // Publisher (depth 20 to absorb 1 kHz bursts)
-        imu_pub_ = create_publisher<sensor_msgs::msg::Imu>("sensors/fog_kvh", 20);
+        imu_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh", 20);
 
         // Construct driver (Driver constructor calls serial.open())
         serial_ = std::make_unique<SerialUnix>(port_);

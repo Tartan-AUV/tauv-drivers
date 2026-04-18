@@ -1,5 +1,6 @@
 /*
  * The IMUConverter node assigns covariance values to incoming IMU sensor data
+ * NOT USED ANYMORE
  */
 
 #include "tauv_repackagers/imu_converter.h"
@@ -17,25 +18,13 @@ ImuConverter::ImuConverter(std::string prefix) : Node("imu_converter"), prefix_(
 
 void ImuConverter::imuCallback(sensor_msgs::msg::Imu::SharedPtr msg) const {
     // 1. Orientation Variance (Derived from typical Xsens 0.5 deg Roll/Pitch, 1.0 deg Yaw)
-    msg->orientation_covariance = {
-        0.000076, 0.0,      0.0,
-        0.0,      0.000076, 0.0,
-        0.0,      0.0,      0.000300
-    };
+    msg->orientation_covariance = {0.000076, 0.0, 0.0, 0.0, 0.000076, 0.0, 0.0, 0.0, 0.000300};
 
     // 2. Angular Velocity Variance (From spec sheet: 1.1e-6)
-    msg->angular_velocity_covariance = {
-        1.1e-6, 0.0,    0.0,
-        0.0,    1.1e-6, 0.0,
-        0.0,    0.0,    1.1e-6
-    };
+    msg->angular_velocity_covariance = {1.1e-6, 0.0, 0.0, 0.0, 1.1e-6, 0.0, 0.0, 0.0, 1.1e-6};
 
     // 3. Linear Acceleration Variance (From spec sheet: 1.0e-5)
-    msg->linear_acceleration_covariance = {
-        1.0e-5, 0.0,    0.0,
-        0.0,    1.0e-5, 0.0,
-        0.0,    0.0,    1.0e-5
-    };
+    msg->linear_acceleration_covariance = {1.0e-2, 0.0, 0.0, 0.0, 1.0e-2, 0.0, 0.0, 0.0, 1.0e-2};
 
     // Republish the fixed message
     pub_->publish(*msg);

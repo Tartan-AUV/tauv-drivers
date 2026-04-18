@@ -216,9 +216,9 @@
         # Sensor Standard Deviation (Optional)
         # ------------------------------------
         # Override the covariance matrix in sensor_msgs/Imu and sensor_msgs/MagneticField messages:
-        linear_acceleration_stddev: [0.0, 0.0, 0.0] # [m/s^2] Standard deviation for linear acceleration
-        angular_velocity_stddev: [0.0, 0.0, 0.0] # [rad/s] Standard deviation for angular velocity
-        orientation_stddev: [0.0, 0.0, 0.0] # [rad]   Standard deviation for orientation
+        linear_acceleration_stddev: [0.01, 0.01, 0.01] # [m/s^2] Standard deviation for linear acceleration
+        angular_velocity_stddev: [0.001049, 0.001049, 0.001049] # [rad/s] Standard deviation for angular velocity
+        orientation_stddev: [0.00872,0.00872, 0.01732] # [rad]   Standard deviation for orientation
         magnetic_field_stddev: [0.0, 0.0, 0.0] # [Tesla] Standard deviation for magnetic field
 
 
