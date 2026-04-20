@@ -7,16 +7,20 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <thread>
+#include <utility>
 
 #include "driver.h"
 #include "serial_unix.h"
 
+namespace tauv_KVH
+{
+
 class KvhNode : public rclcpp::Node {
    public:
-    KvhNode() : Node("kvh_imu") {
+    KvhNode(const rclcpp::NodeOptions& options) : Node("kvh_imu", options) {
         // Parameters
         port_ = declare_parameter<std::string>("port", "/dev/ttyTHS1");
-        frame_id_ = declare_parameter<std::string>("frame_id", "imu_link");
+        frame_id_ = declare_parameter<std::string>("frame_id", "imu_link_fog");
 
         // Covariance: variance = (noise_density)^2 * bandwidth_hz
         // KVH 1775 ARW ~0.05 deg/sqrt(hr) -> ~1.45e-5 rad/s/sqrt(Hz)
@@ -85,46 +89,40 @@ class KvhNode : public rclcpp::Node {
                 // the data is usually still usable.
             }
 
-            auto msg = sensor_msgs::msg::Imu{};
-            msg.header.frame_id = frame_id_;
-            msg.header.stamp = computeTimestamp(driver_->getTimestampUs());
+            auto msg = std::make_unique<sensor_msgs::msg::Imu>();
+
+            msg->header.frame_id = frame_id_;
+            msg->header.stamp = computeTimestamp(driver_->getTimestampUs());
 
             const auto gyro = driver_->getGyroData();
             const auto accel = driver_->getAccData();
 
-            msg.angular_velocity.x = gyro.x;
-            msg.angular_velocity.y = gyro.y;
-            msg.angular_velocity.z = gyro.z;
+            msg->angular_velocity.x = gyro.x;
+            msg->angular_velocity.y = gyro.y;
+            msg->angular_velocity.z = gyro.z;
 
-            msg.linear_acceleration.x = accel.x;
-            msg.linear_acceleration.y = accel.y;
-            msg.linear_acceleration.z = accel.z;
+            msg->linear_acceleration.x = accel.x;
+            msg->linear_acceleration.y = accel.y;
+            msg->linear_acceleration.z = accel.z;
 
             // REP-145: orientation_covariance[0] = -1 means "no orientation"
-            msg.orientation_covariance[0] = -1.0;
+            msg->orientation_covariance[0] = -1.0;
 
             // Diagonal covariance from datasheet noise density
-            msg.angular_velocity_covariance[0] = gyro_var_;
-            msg.angular_velocity_covariance[4] = gyro_var_;
-            msg.angular_velocity_covariance[8] = gyro_var_;
+            msg->angular_velocity_covariance[0] = gyro_var_;
+            msg->angular_velocity_covariance[4] = gyro_var_;
+            msg->angular_velocity_covariance[8] = gyro_var_;
 
-            msg.linear_acceleration_covariance[0] = accel_var_;
-            msg.linear_acceleration_covariance[4] = accel_var_;
-            msg.linear_acceleration_covariance[8] = accel_var_;
+            msg->linear_acceleration_covariance[0] = accel_var_;
+            msg->linear_acceleration_covariance[4] = accel_var_;
+            msg->linear_acceleration_covariance[8] = accel_var_;
 
-            imu_pub_->publish(msg);
+            imu_pub_->publish(std::move(msg));
         }
     }
 
     // -----------------------------------------------------------------------
     // Timestamp computation using the IMU's own microsecond counter.
-    //
-    // Strategy: anchor the IMU counter to host time on the first packet, then
-    // compute all subsequent stamps as first_host_time + elapsed_imu_us.
-    // This removes USB/FTDI jitter without long-term host-clock drift.
-    //
-    // The UINT32 counter wraps every ~71 minutes; we accumulate a UINT64
-    // running total so we handle multiple wraps correctly.
     // -----------------------------------------------------------------------
     rclcpp::Time computeTimestamp(uint32_t imu_us) {
         if (first_packet_) {
@@ -173,9 +171,7 @@ class KvhNode : public rclcpp::Node {
     rclcpp::Time first_host_time_;
 };
 
-int main(int argc, char** argv) {
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<KvhNode>());
-    rclcpp::shutdown();
-    return 0;
-}
+} // namespace tauv_KVH
+
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(tauv_KVH::KvhNode)
