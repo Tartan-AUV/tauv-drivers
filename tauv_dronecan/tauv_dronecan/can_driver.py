@@ -35,17 +35,19 @@ class CANDriver(Node):
         self.declare_parameter('command_rate_hz', 50.0)
         self.declare_parameter('discovery_time_sec', 5.0)
         self.declare_parameter('dna_db_path', '/tauv-mono/ros_ws/src/tauv_drivers/tauv_dronecan/dronecan_dna.db')
-        
+        self.declare_parameter('BIGARM',True)
+        self.declare_paramter('ESC_MIN_VOLTAGE',13.0)
         interface = self.get_parameter('interface').value
         node_id = self.get_parameter('node_id').value
         bitrate = self.get_parameter('bitrate').value
+        min_voltage = self.get_parameter('ESC_MIN_VOLTAGE').value
         self.esc_count = self.get_parameter('esc_count').value
         self.command_rate_hz = self.get_parameter('command_rate_hz').value
         discovery_time = self.get_parameter('discovery_time_sec').value
         dna_db_path = self.get_parameter('dna_db_path').value
         
         self.throttles = [0.0] * self.esc_count
-        self.BIGARM=True;
+        self.BIGARM=self.get_parameter('BIGARM').value
         self.armed = False
         self.discovered_escs = []
         self.telemetry = {}
@@ -198,6 +200,10 @@ class CANDriver(Node):
             autonomy_thrusts = autonomy_thrusts.tolist()   
             
         voltage = self.avg_esc_voltage()
+        if voltage < self.get_parameter('ESC_MIN_VOLTAGE').value:
+            self.get_logger().warn(f"ESC voltage {voltage:.2f}V below minimum threshold! Setting thrusts to zero. Disarming ESCs.")
+            self.BIGARM = False
+            return [0.0] * self.esc_count
         gain_thrusts = [
             rpm_to_gain(f, voltage) for f in autonomy_thrusts
         ]
