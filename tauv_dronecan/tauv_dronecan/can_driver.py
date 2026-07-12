@@ -33,21 +33,25 @@ class CANDriver(Node):
         self.declare_parameter('bitrate', 1000000)
         self.declare_parameter('esc_count', 8)
         self.declare_parameter('command_rate_hz', 50.0)
+        self.declare_parameter('BIGARM', True)
+        self.declare_parameter('telemetry_rate_hz', 1.0)
         self.declare_parameter('discovery_time_sec', 5.0)
         self.declare_parameter('dna_db_path', '/tauv-mono/ros_ws/src/tauv_drivers/tauv_dronecan/dronecan_dna.db')
-        self.declare_parameter('BIGARM',True)
-        self.declare_paramter('ESC_MIN_VOLTAGE',13.0)
+        
         interface = self.get_parameter('interface').value
         node_id = self.get_parameter('node_id').value
         bitrate = self.get_parameter('bitrate').value
-        min_voltage = self.get_parameter('ESC_MIN_VOLTAGE').value
         self.esc_count = self.get_parameter('esc_count').value
         self.command_rate_hz = self.get_parameter('command_rate_hz').value
+        telemetry_rate_hz = self.get_parameter('telemetry_rate_hz').value
+        # Minimum seconds between esc_telemetry publishes per ESC (0 => unthrottled).
+        self.telemetry_period_s = 1.0 / telemetry_rate_hz if telemetry_rate_hz > 0.0 else 0.0
+        self._last_telem_pub_time = {}
         discovery_time = self.get_parameter('discovery_time_sec').value
         dna_db_path = self.get_parameter('dna_db_path').value
         
         self.throttles = [0.0] * self.esc_count
-        self.BIGARM=self.get_parameter('BIGARM').value
+        self.BIGARM= self.get_parameter('BIGARM').value
         self.armed = False
         self.discovered_escs = []
         self.telemetry = {}
@@ -152,6 +156,16 @@ class CANDriver(Node):
             'error_count': msg.error_count,
         }
         # self.get_logger().info(f'ESC {node_id} Telemetry: {self.telemetry[node_id]}')
+
+        # Rate-limit the ROS publish per ESC (ESCs broadcast status faster than we
+        # want on the topic). Internal self.telemetry above stays at full rate.
+        now = time.monotonic()
+        last = self._last_telem_pub_time.get(node_id)
+        if self.telemetry_period_s > 0.0 and last is not None and \
+                (now - last) < self.telemetry_period_s:
+            return
+        self._last_telem_pub_time[node_id] = now
+
         # Publish telemetry message
         telemetry_msg = EscTelemetry()
         telemetry_msg.id = node_id
@@ -200,10 +214,6 @@ class CANDriver(Node):
             autonomy_thrusts = autonomy_thrusts.tolist()   
             
         voltage = self.avg_esc_voltage()
-        if voltage < self.get_parameter('ESC_MIN_VOLTAGE').value:
-            self.get_logger().warn(f"ESC voltage {voltage:.2f}V below minimum threshold! Setting thrusts to zero. Disarming ESCs.")
-            self.BIGARM = False
-            return [0.0] * self.esc_count
         gain_thrusts = [
             rpm_to_gain(f, voltage) for f in autonomy_thrusts
         ]
@@ -220,13 +230,14 @@ class CANDriver(Node):
         if msg.data == "OK":
             self.get_logger().debug("Received OK from watchdog")
             # self.BIGARM = True
-        elif msg.data == "RESET":
-            self.get_logger().debug("Received RESET from some cool person")
-            self.BIGARM = True
-        
         else:
-            self.get_logger().warn(f"Unexpected watchdog message: '{msg.data}'")
+            # Any non-OK state is treated as a kill. Disarm AND zero throttles so
+            # the ESCs are commanded off directly, rather than relying solely on
+            # the ESCs honoring ArmingStatus=0 (we keep broadcasting RawCommand
+            # every tick, so the ESC no-message failsafe never engages).
+            self.get_logger().warn(f"Watchdog reported {msg.data} - disarming and zeroing throttles")
             self.BIGARM = False
+            self.throttles = [0.0] * self.esc_count
 
     def _thruster_callback(self, msg):
 

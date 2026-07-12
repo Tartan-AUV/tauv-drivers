@@ -1,0 +1,79 @@
+# Servo task map for tauv_servo/servo_driver.
+#
+# Each key under `tasks` is a task name. Publish that name as a std_msgs/String
+# on the command topic (default /servo/task) to run it. Task names are matched
+# case-insensitively.
+#
+# A task is an ordered list of servo actions, executed top to bottom. Each action
+# needs servo_id plus EXACTLY ONE position key. The three keys differ only in
+# what the angle is measured from:
+#
+#   position_deg       absolute, 0-360 deg (180 = servo center).
+#   position_relative  offset from center, so -90 means 90 deg. Center is always
+#                      180 deg regardless of where the servo happens to be.
+#   position_startup   offset from where THIS SERVO WAS SITTING when the node
+#                      started. 0 = go back to the startup angle. This is the one
+#                      to use for a mechanism whose safe travel is defined
+#                      relative to its resting position rather than to the
+#                      servo's absolute scale.
+#
+#   torque_limit       (optional) 0-100 % motor output cap for this servo.
+#
+# The startup zero is captured once, during the node's init bus scan, and never
+# updated — so `position_startup: 0` always returns to where the mechanism began,
+# not to wherever the last task happened to leave it. The servo holds its physical
+# angle across a reboot (absolute encoder, no homing), so the startup zero is the
+# mechanism's true resting angle.
+#
+# A target outside the servo's position limits is CLAMPED by the servo, not
+# ignored: it would drive to the limit and stop there. The driver therefore
+# refuses such a target outright and reports error_<task>.
+#
+# Hardware on the sub (confirmed by bus scan):
+#   servo 1 - on a mechanism. Travel restricted to +-20 deg of its resting angle.
+#   servo 2 - loose. Full +-150 deg (30-330), persisted in its flash.
+
+# Per-servo setup, applied once during the node's init scan. This is the safety
+# layer: the limits written here are enforced by the SERVO ITSELF, which clamps
+# any target beyond them. A bug in this node cannot drive a servo past its window.
+#
+#   limit_mode: startup  -> limits centered on the angle the servo was found at.
+#                           Use for a mechanism whose safe travel is defined
+#                           around its resting position.
+#   limit_mode: center   -> limits centered on 180 deg (the servo's own center).
+#   limit_deg            -> half-width of the window, in degrees. 0 = don't touch
+#                           the servo's existing limits.
+#   torque_limit         -> 0-100 %, applied BEFORE the motor is ever engaged.
+#
+# Servos not listed here fall back to the global position_limit_deg parameter.
+servos:
+  1:
+    limit_mode: startup   # mechanism: window follows wherever it powered up
+    limit_deg: 20         # hard +-20 deg guard rail around the startup angle
+    torque_limit: 25
+
+  2:
+    limit_mode: center    # loose: full travel around the servo's own center
+    limit_deg: 150        # 30-330 deg
+    torque_limit: 25
+
+tasks:
+  # --- servo 1: constrained mechanism, angles relative to where it started -----
+  home:
+    - {servo_id: 1, position_startup: 0, torque_limit: 25}
+
+  nudge_up:
+    - {servo_id: 1, position_startup: +10, torque_limit: 25}
+
+  nudge_down:
+    - {servo_id: 1, position_startup: -10, torque_limit: 25}
+
+  # --- servo 2: loose, full range ---------------------------------------------
+  center:
+    - {servo_id: 2, position_deg: 180, torque_limit: 25}
+
+  open:
+    - {servo_id: 2, position_deg: 90, torque_limit: 25}
+
+  close:
+    - {servo_id: 2, position_deg: 270, torque_limit: 25}
