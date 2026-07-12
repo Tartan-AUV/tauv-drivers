@@ -46,13 +46,18 @@
 #   torque_limit         -> 0-100 %, applied BEFORE the motor is ever engaged.
 #
 # Servos not listed here fall back to the global position_limit_deg parameter.
+#   id                   -> mechanism name reported on the status topic
+#                           (tauv_msgs/Status.id). One of: dropper, torpedo,
+#                           watchdog, trajectory.
 servos:
   1:
+    id: torpedo           # reported as Status.id = "torpedo"
     limit_mode: startup   # mechanism: window follows wherever it powered up
     limit_deg: 20         # hard +-20 deg guard rail around the startup angle
     torque_limit: 25
 
   2:
+    id: dropper           # reported as Status.id = "dropper"
     limit_mode: center    # loose: full travel around the servo's own center
     limit_deg: 150        # 30-330 deg
     torque_limit: 25

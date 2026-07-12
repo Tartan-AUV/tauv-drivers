@@ -7,10 +7,18 @@ Subscribes to a simple std_msgs/String on `command_topic` (default /servo/task).
 The string names a *task* defined in config/servo_tasks.yaml; the node looks it
 up and drives the mapped servo(s) to the mapped position(s) over CAN using the
 hitec_servo library, then reads each servo back to verify it reached its target
-angle. A std_msgs/String status is published on `status_topic`
-(default /servo/status): "running_<task>" when a task starts, "done_<task>" once
-every action has been verified, and "error_<task>" (with the reason logged) on
-any failure.
+angle.
+
+Progress is published as tauv_msgs/Status on `status_topic` (default
+/mission/status):
+
+    id      the mechanism the task drives, from the servo's `id:` in the YAML
+            ("torpedo" = servo 1, "dropper" = servo 2)
+    status  2 = running (task started)
+            1 = success (every angle read back and verified)
+            0 = failed  (unknown task, no ack, out of limits, or angle not reached)
+
+A task that drives two servos reports one Status per mechanism.
 
 On startup the node scans the CAN bus and logs every servo it finds, along with
 a one-line telemetry snapshot for each.
@@ -18,8 +26,9 @@ a one-line telemetry snapshot for each.
 Task config format (see config/servo_tasks.yaml):
     tasks:
       <task_name>:
-        - {servo_id: <int>, position_deg: <0-360>}          # absolute
+        - {servo_id: <int>, position_deg: <0-360>}           # absolute
         - {servo_id: <int>, position_relative: <-150..150>}  # offset from center
+        - {servo_id: <int>, position_startup: <offset>}      # offset from startup
         - {servo_id: <int>, position_deg: 90, torque_limit: 50}  # + torque cap
 """
 
@@ -31,8 +40,14 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from std_msgs.msg import String
+from tauv_msgs.msg import Status
 
 from tauv_servo.hitec_servo import HitecBus
+
+# tauv_msgs/Status.status values.
+STATUS_FAILED = 0
+STATUS_SUCCESS = 1
+STATUS_RUNNING = 2
 
 
 # An action carries exactly one of these. They differ only in what the angle is
@@ -60,7 +75,7 @@ class ServoDriver(Node):
         self.declare_parameter('bitrate', 1000000)
         self.declare_parameter('tasks_config', _default_tasks_config())
         self.declare_parameter('command_topic', 'servo/task')
-        self.declare_parameter('status_topic', 'servo/status')
+        self.declare_parameter('status_topic', '/mission/status')
         self.declare_parameter('torque_limit', 0.0)   # 0 = leave servo default
         self.declare_parameter('startup_task', '')     # '' = none
         self.declare_parameter('scan_max_id', 20)      # highest servo ID to probe
@@ -109,7 +124,7 @@ class ServoDriver(Node):
         self._startup_deg = {}
 
         # Status publisher (create before bus so we can report bring-up failures)
-        self.status_pub = self.create_publisher(String, status_topic, 10)
+        self.status_pub = self.create_publisher(Status, status_topic, 10)
 
         # CAN bus bring-up — keep the node alive even if the bus fails to open,
         # so a bad cable/interface doesn't crash the whole launch.
@@ -393,22 +408,27 @@ class ServoDriver(Node):
         name = (raw_name or '').strip().lower()
         if not name:
             self.get_logger().warn('Received empty task name.')
-            self._status('error_empty_task')
-            return
-
-        if self.bus is None:
-            self.get_logger().error(f'Cannot run "{name}": CAN bus is down.')
-            self._status(f'error_{name}')
+            self._status([], STATUS_FAILED)
             return
 
         actions = self.tasks.get(name)
         if actions is None:
             self.get_logger().warn(f'Unknown task: "{name}"')
-            self._status(f'error_{name}')
+            self._status([], STATUS_FAILED)
             return
 
-        self.get_logger().info(f'Running task "{name}" ({len(actions)} action(s))')
-        self._status(f'running_{name}')
+        # Resolve the mechanism id(s) before doing anything, so a failure can be
+        # reported against the right mechanism rather than an empty id.
+        ids = self._task_ids(actions)
+
+        if self.bus is None:
+            self.get_logger().error(f'Cannot run "{name}": CAN bus is down.')
+            self._status(ids, STATUS_FAILED)
+            return
+
+        self.get_logger().info(
+            f'Running task "{name}" ({len(actions)} action(s)) -> {ids or "no id"}')
+        self._status(ids, STATUS_RUNNING)
 
         ok = True
         for action in actions:
@@ -417,10 +437,10 @@ class ServoDriver(Node):
 
         if ok:
             self.get_logger().info(f'Task "{name}" done (all angles verified)')
-            self._status(f'done_{name}')
+            self._status(ids, STATUS_SUCCESS)
         else:
             self.get_logger().warn(f'Task "{name}" failed.')
-            self._status(f'error_{name}')
+            self._status(ids, STATUS_FAILED)
 
     def _run_action(self, task_name: str, action: dict) -> bool:
         """Execute a single validated servo action. Returns True on ack."""
@@ -534,8 +554,31 @@ class ServoDriver(Node):
 
     # --- Helpers --------------------------------------------------------------
 
-    def _status(self, text: str):
-        self.status_pub.publish(String(data=text))
+    def _task_ids(self, actions) -> list:
+        """The mechanism ids a task drives, e.g. ['torpedo'].
+
+        The id comes from the `id:` field of each servo in the YAML `servos:`
+        section (servo 1 = torpedo, servo 2 = dropper). A task touching two
+        servos reports one Status per mechanism. Order-preserving and de-duped so
+        a task that moves the same servo twice still reports its id once.
+        """
+        ids = []
+        for action in actions:
+            sid = action.get('servo_id')
+            mech = self.servo_cfg.get(sid, {}).get('id')
+            if mech and mech not in ids:
+                ids.append(str(mech))
+        return ids
+
+    def _status(self, ids, code: int):
+        """Publish one tauv_msgs/Status per mechanism id."""
+        if not ids:
+            # No mechanism could be resolved (unknown task, or a servo with no
+            # id: in the config). Still report, with an empty id, so a subscriber
+            # sees the failure rather than silence.
+            ids = ['']
+        for mech in ids:
+            self.status_pub.publish(Status(id=mech, status=code))
 
     def destroy_node(self):
         self.get_logger().info('Shutting down servo_driver')
