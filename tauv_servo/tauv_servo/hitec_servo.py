@@ -142,8 +142,6 @@ class Telemetry:
     """Servo telemetry snapshot."""
     servo_id: int
     position_deg: float       # Absolute position (0-360°)
-    position_relative: float  # Offset from center (-180 to +180°)
-    position_raw: int         # Raw position (0-16383)
     velocity: int             # Velocity in pos/100ms
     torque_percent: float     # Motor PWM duty (0-100%)
     voltage: float            # Supply voltage in volts
@@ -155,7 +153,7 @@ class Telemetry:
         err = ", ".join(self.errors) if self.errors else "none"
         return (
             f"Servo {self.servo_id}: "
-            f"pos={self.position_deg:.1f}° ({self.position_relative:+.1f}°) "
+            f"pos={self.position_deg:.1f}° "
             f"vel={self.velocity} "
             f"torque={self.torque_percent:.1f}% "
             f"V={self.voltage:.2f}V "
@@ -433,8 +431,6 @@ class HitecServo:
         return Telemetry(
             servo_id=self.id,
             position_deg=_raw_to_deg(pos_raw),
-            position_relative=_raw_to_deg(pos_raw) - _CENTER_DEG,
-            position_raw=pos_raw,
             velocity=_s16(vel),
             torque_percent=torque_raw / 4095.0 * 100.0,
             voltage=volt_raw / 100.0,

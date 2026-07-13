@@ -1,79 +1,60 @@
 # Servo task map for tauv_servo/servo_driver.
 #
-# Each key under `tasks` is a task name. Publish that name as a std_msgs/String
-# on the command topic (default /servo/task) to run it. Task names are matched
-# case-insensitively.
+# Publish a task name (std_msgs/String) on the command topic (default
+# /servo/task) to run it. Names are matched case-insensitively.
 #
-# A task is an ordered list of servo actions, executed top to bottom. Each action
-# needs servo_id plus EXACTLY ONE position key. The three keys differ only in
-# what the angle is measured from:
+# A task is an ordered list of actions. An action is simply:
 #
-#   position_deg       absolute, 0-360 deg (180 = servo center).
-#   position_relative  offset from center, so -90 means 90 deg. Center is always
-#                      180 deg regardless of where the servo happens to be.
-#   position_startup   offset from where THIS SERVO WAS SITTING when the node
-#                      started. 0 = go back to the startup angle. This is the one
-#                      to use for a mechanism whose safe travel is defined
-#                      relative to its resting position rather than to the
-#                      servo's absolute scale.
+#     {servo_id: <int>, angle: <degrees>}
 #
-#   torque_limit       (optional) 0-100 % motor output cap for this servo.
+# `angle` is ABSOLUTE, 0-360 deg, where 180 is the servo's center. The servo
+# has an absolute encoder and no homing, so a given mechanism position is
+# always the same absolute angle. Don't guess angles — measure them once with:
 #
-# The startup zero is captured once, during the node's init bus scan, and never
-# updated — so `position_startup: 0` always returns to where the mechanism began,
-# not to wherever the last task happened to leave it. The servo holds its physical
-# angle across a reboot (absolute encoder, no homing), so the startup zero is the
-# mechanism's true resting angle.
+#     ros2 run tauv_servo find_setpoints
 #
-# A target outside the servo's position limits is CLAMPED by the servo, not
-# ignored: it would drive to the limit and stop there. The driver therefore
-# refuses such a target outright and reports error_<task>.
-#
-# Hardware on the sub (confirmed by bus scan):
-#   servo 1 - on a mechanism. Travel restricted to +-20 deg of its resting angle.
-#   servo 2 - loose. Full +-150 deg (30-330), persisted in its flash.
+# A target outside a servo's position window (below) is refused and the task
+# reports failed (Status.status = 0) — the servo would otherwise clamp to the
+# limit and physically drive there.
 
-# Per-servo setup, applied once during the node's init scan. This is the safety
-# layer: the limits written here are enforced by the SERVO ITSELF, which clamps
-# any target beyond them. A bug in this node cannot drive a servo past its window.
-#
-#   limit_mode: startup  -> limits centered on the angle the servo was found at.
-#                           Use for a mechanism whose safe travel is defined
-#                           around its resting position.
-#   limit_mode: center   -> limits centered on 180 deg (the servo's own center).
-#   limit_deg            -> half-width of the window, in degrees. 0 = don't touch
-#                           the servo's existing limits.
-#   torque_limit         -> 0-100 %, applied BEFORE the motor is ever engaged.
-#
-# Servos not listed here fall back to the global position_limit_deg parameter.
+# Per-servo setup, applied once at node startup:
+#   id            mechanism name reported on the status topic (Status.id).
+#                 One of: dropper, torpedo, watchdog, trajectory.
+#   torque_limit  0-100 % motor output cap, applied BEFORE the motor engages.
+#   min_angle /   absolute position window in degrees. Written to the servo
+#   max_angle     itself, which enforces it in hardware — a bug in the driver
+#                 cannot push a mechanism past it. Omit both to fall back to
+#                 the global position_limit_deg parameter (default 30-330).
 servos:
   1:
-    limit_mode: startup   # mechanism: window follows wherever it powered up
-    limit_deg: 20         # hard +-20 deg guard rail around the startup angle
-    torque_limit: 25
+    id: torpedo           # reported as Status.id = "torpedo"
+    torque_limit: 50
+    min_angle: 120
+    max_angle: 210
 
   2:
-    limit_mode: center    # loose: full travel around the servo's own center
-    limit_deg: 150        # 30-330 deg
-    torque_limit: 25
+    id: dropper           # reported as Status.id = "dropper"
+    torque_limit: 25      # full-range servo; window defaults to 30-330
+    min_angle: 300
+    max_angle: 360
 
 tasks:
-  # --- servo 1: constrained mechanism, angles relative to where it started -----
-  home:
-    - {servo_id: 1, position_startup: 0, torque_limit: 25}
+  # --- servo 2 (dropper) ------------------------------------------------------
+  reset_dropper:
+    - {servo_id: 2, angle: 350}
 
-  nudge_up:
-    - {servo_id: 1, position_startup: +10, torque_limit: 25}
+  trump:
+    - {servo_id: 2, angle: 330}
 
-  nudge_down:
-    - {servo_id: 1, position_startup: -10, torque_limit: 25}
+  biden:
+    - {servo_id: 2, angle: 300}
 
-  # --- servo 2: loose, full range ---------------------------------------------
-  center:
-    - {servo_id: 2, position_deg: 180, torque_limit: 25}
-
-  open:
-    - {servo_id: 2, position_deg: 90, torque_limit: 25}
-
-  close:
-    - {servo_id: 2, position_deg: 270, torque_limit: 25}
+  # --- servo 1 (torpedo) ------------------------------------------------------
+  # Measure the real angles with find_setpoints, then fill these in (and set
+  # min_angle/max_angle above so the servo enforces the window):
+  reset_torpedo:
+    - {servo_id: 1, angle: 156}
+  farnam:
+    - {servo_id: 1, angle: 200}
+  fence:
+    - {servo_id: 1, angle: 130}

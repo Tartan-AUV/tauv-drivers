@@ -84,7 +84,7 @@ class KvhNode : public rclcpp::Node {
 
    private:
     void readLoop() {
-        const tf2::Vector3 GRAVITY_WORLD(0.0, 0.0, 9.80665);
+        const tf2::Vector3 GRAVITY_WORLD(0.0, 0.0, 9.79615);
 
         while (!stop_flag_) {
             if (!driver_->tryReadingNewPacket()) {

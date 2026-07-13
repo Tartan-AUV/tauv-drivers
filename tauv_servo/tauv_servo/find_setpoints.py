@@ -53,7 +53,6 @@ Commands (angles are in degrees; 180 = center):
   add <task> [id]      Record a servo's CURRENT angle under <task>
                        (defaults to the selected servo; repeat to add more
                         servos to the same task)
-  rel <task> [id]      Same as add, but records position_relative instead
   drop <task>          Remove a recorded task
   show                 Show everything recorded so far
   yaml                 Print the tasks: YAML block to paste into servo_tasks.yaml
@@ -65,9 +64,7 @@ Commands (angles are in degrees; 180 = center):
 
 def fmt_action(a):
     """Render one recorded action as inline-YAML, matching servo_tasks.yaml."""
-    if "position_relative" in a:
-        return f"{{servo_id: {a['servo_id']}, position_relative: {a['position_relative']}}}"
-    return f"{{servo_id: {a['servo_id']}, position_deg: {a['position_deg']}}}"
+    return f"{{servo_id: {a['servo_id']}, angle: {a['angle']}}}"
 
 
 def print_yaml(tasks):
@@ -90,7 +87,7 @@ def read_angle(servo):
     if pos is None:
         print(f"  servo {servo.id}: position read FAILED")
         return None
-    print(f"  servo {servo.id}: at {pos:.1f} deg abs ({pos - 180.0:+.1f} deg from center)")
+    print(f"  servo {servo.id}: at {pos:.1f} deg")
     return pos
 
 
@@ -104,16 +101,13 @@ def do_move(servo, abs_deg, settle=0.8):
     return read_angle(servo)
 
 
-def record(tasks, servo, name, relative):
+def record(tasks, servo, name):
     """Record the servo's current read-back angle under task `name`."""
     pos = servo.position()
     if pos is None:
         print(f"  cannot record — servo {servo.id} position read failed")
         return
-    if relative:
-        action = {"servo_id": servo.id, "position_relative": round(pos - 180.0, 1)}
-    else:
-        action = {"servo_id": servo.id, "position_deg": round(pos, 1)}
+    action = {"servo_id": servo.id, "angle": round(pos, 1)}
     tasks.setdefault(name, [])
     # Replace any existing action for this servo in this task
     tasks[name] = [a for a in tasks[name] if a["servo_id"] != servo.id]
@@ -193,8 +187,8 @@ def repl(interface):
                     t = current.telemetry()
                     print(f"  {t}" if t else "  telemetry read failed")
                 elif cmd == "unlock":
-                    ok = current.set_limits_relative(150)
-                    print("  limits -> 30-330 deg (+-150)" if ok else "  failed to set limits")
+                    ok = current.set_limits_relative(180)
+                    # print("  limits -> 30-330 deg (+-150)" if ok else "  failed to set limits")
                 elif cmd == "limits":
                     ok = current.set_limits(float(args[0]), float(args[1]))
                     print(f"  limits -> {args[0]}-{args[1]} deg" if ok else "  failed")
@@ -206,10 +200,7 @@ def repl(interface):
                     print("  saved to flash (survives power cycle)")
                 elif cmd == "add":
                     servo = bus.servo(int(args[1])) if len(args) > 1 else current
-                    record(tasks, servo, args[0], relative=False)
-                elif cmd == "rel":
-                    servo = bus.servo(int(args[1])) if len(args) > 1 else current
-                    record(tasks, servo, args[0], relative=True)
+                    record(tasks, servo, args[0])
                 elif cmd == "drop":
                     if tasks.pop(args[0], None) is not None:
                         print(f"  dropped {args[0]}")
