@@ -115,7 +115,7 @@ def record(tasks, servo, name):
     print(f"  recorded {name}: {fmt_action(action)}")
 
 
-def scan_and_show(bus, max_id=20):
+def scan_and_show(bus, max_id=3):
     """Scan the bus and print each servo's info + telemetry. Returns id list."""
     print(f"Scanning bus (IDs 1-{max_id})...")
     found = bus.scan(max_id)

@@ -34,16 +34,26 @@ class CANDriver(Node):
         self.declare_parameter('esc_count', 8)
         self.declare_parameter('command_rate_hz', 50.0)
         self.declare_parameter('BIGARM', True)
-        self.declare_parameter('telemetry_rate_hz', 1.0)
+        self.declare_parameter('telemetry_rate_hz', 6.0)
         self.declare_parameter('discovery_time_sec', 5.0)
         self.declare_parameter('dna_db_path', '/tauv-mono/ros_ws/src/tauv_drivers/tauv_dronecan/dronecan_dna.db')
-        
+        # Undervoltage protection, on the average pack voltage reported by the ESCs.
+        self.declare_parameter('startup_voltage_min_v', 14.0)
+        self.declare_parameter('undervoltage_cutoff_v', 12.3)
+        self.declare_parameter('undervoltage_hold_sec', 5.0)
+
         interface = self.get_parameter('interface').value
         node_id = self.get_parameter('node_id').value
         bitrate = self.get_parameter('bitrate').value
         self.esc_count = self.get_parameter('esc_count').value
         self.command_rate_hz = self.get_parameter('command_rate_hz').value
         telemetry_rate_hz = self.get_parameter('telemetry_rate_hz').value
+        self.startup_voltage_min_v = self.get_parameter('startup_voltage_min_v').value
+        self.undervoltage_cutoff_v = self.get_parameter('undervoltage_cutoff_v').value
+        self.undervoltage_hold_sec = self.get_parameter('undervoltage_hold_sec').value
+        # Monotonic timestamp of the first sample below the cutoff, or None if the
+        # pack is currently above it.
+        self._undervoltage_since = None
         # Minimum seconds between esc_telemetry publishes per ESC (0 => unthrottled).
         self.telemetry_period_s = 1.0 / telemetry_rate_hz if telemetry_rate_hz > 0.0 else 0.0
         self._last_telem_pub_time = {}
@@ -117,8 +127,15 @@ class CANDriver(Node):
                 pass  
         
         self.get_logger().info(f'Found {len(self.discovered_escs)} ESCs: {self.discovered_escs}')
-        self.arm()
-        
+
+        if self._startup_voltage_ok():
+            self.arm()
+        else:
+            # Latched refusal: nothing sets BIGARM back to True, so the node runs
+            # (telemetry keeps publishing) but never commands the thrusters.
+            self.BIGARM = False
+            self.disarm()
+
         # Close DNA server after discovery
         if self.allocator:
             self.allocator.close()
@@ -182,6 +199,69 @@ class CANDriver(Node):
             return 16.0  # Default voltage if no telemetry available
         return sum(t['voltage'] for t in self.telemetry.values()) / len(self.telemetry)
 
+    def _startup_voltage_ok(self):
+        """Whether the pack is healthy enough to arm at all.
+
+        Checked once after discovery. Without telemetry we cannot see the pack at
+        all, so we refuse rather than trust the 16.0 V default in avg_esc_voltage.
+        """
+        if not self.telemetry:
+            self.get_logger().error(
+                'NO ESC TELEMETRY - cannot read pack voltage, REFUSING TO ARM'
+            )
+            return False
+
+        voltage = self.avg_esc_voltage()
+        if voltage < self.startup_voltage_min_v:
+            self.get_logger().error(
+                f'PACK UNDERVOLTAGE AT STARTUP: {voltage:.2f} V is below the '
+                f'{self.startup_voltage_min_v:.2f} V minimum'
+            )
+            self.get_logger().error(
+                'REFUSING TO ARM - charge or swap the battery, then restart this node'
+            )
+            return False
+
+        self.get_logger().info(f'Pack voltage OK at startup: {voltage:.2f} V')
+        return True
+
+    def _check_undervoltage(self):
+        """Kill the thrusters if the pack holds below the cutoff for undervoltage_hold_sec.
+
+        Like the watchdog kill this clears BIGARM, which latches: nothing sets it
+        back to True, so a pack that sags under load and bounces back once the
+        thrusters stop cannot silently re-arm itself.
+        """
+        if not self.BIGARM:
+            return  # already killed
+        if not self.telemetry:
+            return  # no telemetry yet; avg_esc_voltage would report its 16.0 V default
+
+        voltage = self.avg_esc_voltage()
+        now = time.monotonic()
+
+        if voltage >= self.undervoltage_cutoff_v:
+            if self._undervoltage_since is not None:
+                self.get_logger().info(f'Pack voltage recovered to {voltage:.2f} V')
+                self._undervoltage_since = None
+            return
+
+        if self._undervoltage_since is None:
+            self._undervoltage_since = now
+            self.get_logger().warn(
+                f'Pack at {voltage:.2f} V, below the {self.undervoltage_cutoff_v:.2f} V '
+                f'cutoff - killing thrusters if this holds {self.undervoltage_hold_sec:.1f} s'
+            )
+            return
+
+        held = now - self._undervoltage_since
+        if held >= self.undervoltage_hold_sec:
+            self.get_logger().error(
+                f'UNDERVOLTAGE: pack at {voltage:.2f} V for {held:.1f} s - KILLING THRUSTERS'
+            )
+            self.BIGARM = False
+            self.disarm()
+
     def _on_node_status(self, event):
         node_id = event.transfer.source_node_id
         # print(f'Node {node_id} status update received')
@@ -227,10 +307,13 @@ class CANDriver(Node):
         return out
 
     def _watchdog_callback(self, msg):
-        if msg.data == "OK":
+        if msg.data == "continue":
             self.get_logger().debug("Received OK from watchdog")
             # self.BIGARM = True
-        else:
+            self.armed = True
+            
+            
+        elif msg.data == "kill":
             # Any non-OK state is treated as a kill. Disarm AND zero throttles so
             # the ESCs are commanded off directly, rather than relying solely on
             # the ESCs honoring ArmingStatus=0 (we keep broadcasting RawCommand
@@ -254,12 +337,21 @@ class CANDriver(Node):
 
     def _send_commands(self):
 
+        # Runs before the broadcast below, so the tick that trips the cutoff already
+        # sends ArmingStatus=0 and zeroed throttles.
+        self._check_undervoltage()
+
+        armed = self.armed and self.BIGARM
+
         arming_msg = dronecan.uavcan.equipment.safety.ArmingStatus(
-            status=255 if (self.armed and self.BIGARM) else 0
+            status=255 if armed else 0
         )
         self.dronecan_node.broadcast(arming_msg)
-                
-        raw_values = [int(t * 1) for t in self.throttles]
+
+        # BIGARM is authoritative on the wire: while killed we never put a nonzero
+        # command on the bus, no matter what left self.throttles set.
+        throttles = self.throttles if armed else [0.0] * self.esc_count
+        raw_values = [int(t * 1) for t in throttles]
         cmd_msg = dronecan.uavcan.equipment.esc.RawCommand(cmd=raw_values)
         self.dronecan_node.broadcast(cmd_msg)
     
@@ -277,7 +369,7 @@ class CANDriver(Node):
     def disarm(self):
         self.armed = False
         self.throttles = [0.0] * self.esc_count
-        self.get_logger().info('ESCs DISARMED')
+        self.get_logger().info('ESCs DISARMED', throttle_duration_sec=2.0)
     
     def destroy_node(self):
         

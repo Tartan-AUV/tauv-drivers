@@ -29,8 +29,8 @@ servos:
   1:
     id: torpedo           # reported as Status.id = "torpedo"
     torque_limit: 50
-    min_angle: 120
-    max_angle: 210
+    min_angle: 140
+    max_angle: 230
 
   2:
     id: dropper           # reported as Status.id = "dropper"
@@ -53,8 +53,8 @@ tasks:
   # Measure the real angles with find_setpoints, then fill these in (and set
   # min_angle/max_angle above so the servo enforces the window):
   reset_torpedo:
-    - {servo_id: 1, angle: 156}
+    - {servo_id: 1, angle: 185}
   farnam:
-    - {servo_id: 1, angle: 200}
+    - {servo_id: 1, angle: 220}
   fence:
-    - {servo_id: 1, angle: 130}
+    - {servo_id: 1, angle: 160}
