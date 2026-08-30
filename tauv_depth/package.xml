@@ -3,7 +3,7 @@
 <package format="3">
   <name>tauv_depth</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS 2 driver for the Blue Robotics Bar02 (MS5837-02BA) depth/pressure sensor.</description>
   <maintainer email="root@todo.todo">root</maintainer>
   <license>TODO: License declaration</license>
 

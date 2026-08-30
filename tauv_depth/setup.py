@@ -16,7 +16,7 @@ setup(
     zip_safe=True,
     maintainer='root',
     maintainer_email='root@todo.todo',
-    description='TODO: Package description',
+    description='ROS 2 driver for the Blue Robotics Bar02 (MS5837-02BA) depth/pressure sensor.',
     license='TODO: License declaration',
     extras_require={
         'test': [
