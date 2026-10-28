@@ -32,8 +32,8 @@ constexpr uint32_t HEADER = Message_Format_B_HEADER;
 constexpr uint8_t DATAGRAM_SIZE = 40;
 
 // Baudrate
-constexpr auto BAUD_ID   = B921600;
-constexpr auto BAUD_RATE = 921600;   // [bits/s]
+constexpr auto BAUD_ID   = B460800;
+constexpr auto BAUD_RATE = 460800;   // [bits/s], datasheet max data rate at this baud is 500 Hz
 
 // assume 10 bits/serial_byte (1 start bit + 8 bits/data_byte + 1 stop bit)
 constexpr uint32_t DATAGRAM_TRANSIT_TIME_us =

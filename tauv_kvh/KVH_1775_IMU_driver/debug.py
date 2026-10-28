@@ -1,7 +1,7 @@
 import serial
 import time
 
-ser = serial.Serial("/dev/ttyTHS1", 921600, timeout=0)
+ser = serial.Serial("/dev/ttyTHS1", 460800, timeout=0)
 start = time.time()
 last = -1e99
 while True:

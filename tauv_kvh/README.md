@@ -105,10 +105,10 @@ exact `=cmd` sequence; the important ones are:
 | Command | Sets | Why the driver needs it |
 |---|---|---|
 | `=outputfmt,B` | Format B (40-byte packets w/ µs timestamp) | The parser only recognizes the Format B header `0xFE81FF56`. |
-| `=dr,1000` | 1000 Hz output rate | Target sample rate. |
+| `=dr,500` | 500 Hz output rate | Target sample rate (the max the datasheet allows at 460800 baud). |
 | `=angunits,RAD` + `=angfmt,RATE` | Gyro in rad/s | The driver passes gyro through **unscaled**, so the device must already output rad/s (not deg, not delta-angle). |
 | `=linunits,METERS` + `=linfmt,ACCEL` | Accel in g→m/s² | The driver multiplies by `9.80665`, so the device must output acceleration (not delta-velocity). |
-| `=baud,921600` | Baud rate | Must match `BAUD_RATE` in `constants.h`. |
+| `=baud,460800` | Baud rate | Must match `BAUD_RATE` in `constants.h`. Lower than the 921600 default to avoid Jetson UART overruns. |
 
 If these don't match, packets either won't parse (wrong header) or values come
 out in the wrong units/scale.
@@ -129,7 +129,7 @@ Configure it by editing the two parameters at the top of the file:
 - **Port** — the `serial.Serial("/dev/ttyTHS1", ...)` path. Set this to wherever
   the IMU enumerates (`/dev/ttyTHS1` on the Jetson UART, `/dev/ttyUSB0` over the
   FTDI USB adapter, or the `/dev/kvh1775` udev symlink).
-- **Baud** — `921600`, must match the IMU's configured `=baud` and `constants.h`.
+- **Baud** — `460800`, must match the IMU's configured `=baud` and `constants.h`.
 
 Use it for bring-up: if you see byte chunks arriving with small, steady gaps the
 link and IMU config are good; if the inter-read gaps are large/lumpy, the

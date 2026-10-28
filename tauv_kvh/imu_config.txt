@@ -6,13 +6,13 @@ before running the ROS driver. Settings are stored in non-volatile memory on the
 device and persist across power cycles.
 
 Connection:
-  picocom -b 921600 --imap lfcrlf /dev/ttyUSB0
+  picocom -b 460800 --imap lfcrlf /dev/ttyUSB0
 
 Commands (type each line and press Enter):
   =config,1
   =outputfmt,B
-  =baud,921600
-  =dr,1000
+  =baud,460800
+  =dr,500
   =angunits,RAD
   =angfmt,RATE
   =linunits,METERS
@@ -24,8 +24,8 @@ Commands (type each line and press Enter):
 What each command does:
   =config,1         Enter configuration mode (required before any other =cmd)
   =outputfmt,B      Switch to Format B packets (40-byte, includes µs timestamp)
-  =baud,921600      Confirm baud rate (921600 is the factory default)
-  =dr,1000          Output rate: 1000 Hz
+  =baud,460800      Baud rate (factory default is 921600; 460800 gives the Jetson UART more margin and supports up to 500 Hz)
+  =dr,500           Output rate: 500 Hz (max at 460800 baud)
   =angunits,RAD     Angular units: radians (not degrees)
   =angfmt,RATE      Angular format: rate (rad/s), NOT delta-angle
   =linunits,METERS  Linear units: m/s²
@@ -34,7 +34,7 @@ What each command does:
   =filttype,A,BUTTER Accel filter: Butterworth
   =config,0         Exit configuration mode and resume streaming
 
-After =config,0 the IMU will begin streaming Format B at 1000 Hz immediately.
+After =config,0 the IMU will begin streaming Format B at 500 Hz immediately.
 Exit picocom with Ctrl-A then Ctrl-X before starting the ROS driver.
 
 FTDI Latency Timer (do once per boot, or add the udev rule below):
