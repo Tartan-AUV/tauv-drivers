@@ -47,6 +47,12 @@ rclcpp_components_register_node(tauv_kvh
   EXECUTABLE kvh_node
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_fog_clock test/test_fog_clock.cpp)
+  target_include_directories(test_fog_clock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+endif()
+
 install(TARGETS kvh_node tauv_kvh
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

@@ -1,8 +1,11 @@
 #include <pthread.h>
 #include <sched.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -18,6 +21,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include "driver.h"
+#include "fog_clock.hpp"
 #include "serial_unix.h"
 
 namespace tauv_kvh {
@@ -29,6 +33,8 @@ class KvhNode : public rclcpp::Node {
         port_ = declare_parameter<std::string>("port", "/dev/ttyTHS1");
         odom_topic_ = declare_parameter<std::string>("odom_topic", "/odometry/filtered");
         base_frame_id_ = declare_parameter<std::string>("base_frame_id", "os/base_link");
+        // false falls back to stamping with host receive time
+        use_imu_timestamps_ = declare_parameter<bool>("use_imu_timestamps", true);
 
         // Independent frames
         frame_id_gyro_ = declare_parameter<std::string>("frame_id_gyro", "imu_link_fog_gyro");
@@ -94,11 +100,30 @@ class KvhNode : public rclcpp::Node {
                 continue;
             }
 
-            if (!driver_->isChecksumGood() || !driver_->isSensorStatusGood()) {
-                continue; // Optionally add your warning throttles back here
+            if (!driver_->isChecksumGood()) {
+                window_crc_errors_++;
+                reportStats();
+                continue;
             }
 
-            auto stamp = computeTimestamp(driver_->getTimestampUs());
+            // Every CRC-good packet goes through the clock so sequence gaps
+            // only count packets that never arrived.
+            const int64_t recv_ns = now().nanoseconds();
+            const int64_t imu_stamp_ns = fog_clock_.update(
+                driver_->getTimestampUs(), driver_->getInternalMeasurmentCounter(), recv_ns);
+            const int64_t latency_ns = recv_ns - imu_stamp_ns;
+            window_latency_sum_ns_ += latency_ns;
+            window_latency_max_ns_ = std::max(window_latency_max_ns_, latency_ns);
+            window_packets_++;
+
+            if (!driver_->isSensorStatusGood()) {
+                window_status_errors_++;
+                reportStats();
+                continue;
+            }
+            reportStats();
+
+            const rclcpp::Time stamp(use_imu_timestamps_ ? imu_stamp_ns : recv_ns, RCL_ROS_TIME);
             const auto gyro = driver_->getGyroData();
             const auto accel = driver_->getAccData();
 
@@ -202,8 +227,41 @@ class KvhNode : public rclcpp::Node {
         }
     }
 
-    rclcpp::Time computeTimestamp(uint32_t imu_us) {
-        return this->now();
+    // Every 5 s: WARN if anything went wrong in the window, otherwise an INFO
+    // summary once a minute.
+    void reportStats() {
+        const auto now_steady = std::chrono::steady_clock::now();
+        if (now_steady - window_start_ < std::chrono::seconds(5)) {
+            return;
+        }
+        const auto& s = fog_clock_.stats();
+        const uint64_t missing = s.lost - reported_.lost;
+        const uint64_t anomalies = s.anomalies - reported_.anomalies;
+        const uint64_t resyncs = s.resyncs - reported_.resyncs;
+        const double secs = std::chrono::duration<double>(now_steady - window_start_).count();
+        const double mean_latency_ms =
+            window_packets_ ? window_latency_sum_ns_ / 1e6 / window_packets_ : 0.0;
+        const bool bad = missing || anomalies || resyncs || window_crc_errors_ || window_status_errors_;
+
+        if (bad || now_steady - last_info_ >= std::chrono::seconds(60)) {
+            char line[320];
+            std::snprintf(line, sizeof(line),
+                "FOG last %.1fs: %lu pkts (%.1f Hz), missing %lu, crc errors %lu, status errors %lu, "
+                "timestamp anomalies %lu, offset resyncs %lu, read latency mean %.2f ms max %.2f ms",
+                secs, window_packets_, window_packets_ / secs, missing, window_crc_errors_,
+                window_status_errors_, anomalies, resyncs, mean_latency_ms, window_latency_max_ns_ / 1e6);
+            if (bad) {
+                RCLCPP_WARN(get_logger(), "%s", line);
+            } else {
+                RCLCPP_INFO(get_logger(), "%s", line);
+            }
+            last_info_ = now_steady;
+        }
+
+        reported_ = s;
+        window_start_ = now_steady;
+        window_packets_ = window_crc_errors_ = window_status_errors_ = 0;
+        window_latency_sum_ns_ = window_latency_max_ns_ = 0;
     }
 
     // Parameters
@@ -240,6 +298,18 @@ class KvhNode : public rclcpp::Node {
     // Read thread
     std::atomic<bool> stop_flag_{false};
     std::thread read_thread_;
+
+    // Timestamps and health counters (read thread only)
+    bool use_imu_timestamps_{true};
+    FogClock fog_clock_;
+    FogClock::Stats reported_;
+    std::chrono::steady_clock::time_point window_start_{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_info_{std::chrono::steady_clock::now()};
+    uint64_t window_packets_{0};
+    uint64_t window_crc_errors_{0};
+    uint64_t window_status_errors_{0};
+    int64_t window_latency_sum_ns_{0};
+    int64_t window_latency_max_ns_{0};
 };
 
 }  // namespace tauv_kvh

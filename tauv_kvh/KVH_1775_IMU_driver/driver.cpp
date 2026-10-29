@@ -50,6 +50,10 @@ uint32_t Driver::getTimestampUs() const {
     return sensor_data_.imu_timestamp_us;
 }
 
+uint8_t Driver::getInternalMeasurmentCounter() const {
+    return sensor_data_.counter;
+}
+
 void Driver::reset() {
     checksum_is_ok_    = false;
     no_internal_error_ = true;
