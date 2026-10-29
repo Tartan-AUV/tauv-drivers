@@ -373,6 +373,14 @@ bool XdaInterface::connectDevice()
 	{
 		RCLCPP_INFO(m_node->get_logger(), "Optionflag PositionVelocitySmoother is enabled.");
 	}
+	//alignment rotations persist on the device (e.g. after an MT Manager object/heading reset)
+	//and rotate every orientation and rate output, so log them
+	for (XsAlignmentFrame frame : {XAF_Sensor, XAF_Local})
+	{
+		XsEuler rot(m_device->alignmentRotationQuaternion(frame));
+		RCLCPP_INFO(m_node->get_logger(), "Alignment rotation %s (roll, pitch, yaw deg): %.3f %.3f %.3f",
+			frame == XAF_Sensor ? "RotSensor" : "RotLocal", rot.roll(), rot.pitch(), rot.yaw());
+	}
 	if((optionFlags & XDOF_EnableContinuousZRU) == XDOF_EnableContinuousZRU)
 	{
 		RCLCPP_INFO(m_node->get_logger(), "Optionflag ContinuousZRU is enabled.");
@@ -445,8 +453,18 @@ bool XdaInterface::prepare()
 	//delay 0.05 second, as the previous actions might take a little delay.
 	rclcpp::sleep_for(std::chrono::milliseconds(50));
 	
-	//in any case, send MGBE in the beginning for 6 seconds.
-	manualGyroBiasEstimation(0, 6);
+	//send MGBE in the beginning for 6 seconds. The device must be still for it.
+	bool startup_gyro_bias_estimation = true;
+	m_node->declare_parameter("startup_gyro_bias_estimation", startup_gyro_bias_estimation);
+	m_node->get_parameter("startup_gyro_bias_estimation", startup_gyro_bias_estimation);
+	if (startup_gyro_bias_estimation)
+	{
+		manualGyroBiasEstimation(0, 6, "startup");
+	}
+	else
+	{
+		RCLCPP_INFO(m_node->get_logger(), "Startup gyro bias estimation disabled");
+	}
 
 	// Setup Periodic Manual Gyro Bias Estimation
     setupManualGyroBiasEstimation();
@@ -464,7 +482,7 @@ bool XdaInterface::prepare()
  * parameter to decide whether the MGBE should be enabled, and 'manual_gyro_bias_param' for the parameters required
  * for the estimation process, which includes the event interval and duration for the MGBE.
  */
-bool XdaInterface::manualGyroBiasEstimation(uint16_t sleep, uint16_t duration)
+bool XdaInterface::manualGyroBiasEstimation(uint16_t sleep, uint16_t duration, const std::string &source)
 {
 	// Check if duration is less than 2; if so, set it to 2
     if (duration < 2)
@@ -480,8 +498,18 @@ bool XdaInterface::manualGyroBiasEstimation(uint16_t sleep, uint16_t duration)
 	XsMessage rcv;
 	snd.setDataShort(duration);
 	if (!m_device->sendCustomMessage(snd, true, rcv, 1000))
+	{
+		RCLCPP_WARN(m_node->get_logger(), "Xsens gyro bias calibration (%s) FAILED to start", source.c_str());
 		return false;
+	}
 
+	// The device runs the estimation on its own; log when its window should be over.
+	RCLCPP_INFO(m_node->get_logger(), "Xsens gyro bias calibration (%s) STARTED for %u s - keep the vehicle still",
+		source.c_str(), duration);
+	m_manualGyroBiasDoneTimer = m_node->create_wall_timer(std::chrono::seconds(duration), [this, source]() {
+		RCLCPP_INFO(m_node->get_logger(), "Xsens gyro bias calibration (%s) FINISHED", source.c_str());
+		m_manualGyroBiasDoneTimer->cancel();
+	});
 	return true;
 }
 
@@ -529,14 +557,14 @@ void XdaInterface::setupManualGyroBiasEstimation()
 				if (event_interval > 0) {
                     m_manualGyroBiasTimer = m_node->create_wall_timer(
                         std::chrono::seconds(event_interval),
-                        [this, duration]() { this->manualGyroBiasEstimation(0, duration); }
+                        [this, duration]() { this->manualGyroBiasEstimation(0, duration, "periodic"); }
                     );
                 }
 
 				// Start the subscriber for MGBE with the retrieved parameters
 				m_manualGyroBiasSubscriber = m_node->create_subscription<std_msgs::msg::Empty>(
 				    "gyro_bias_trigger", 10,
-					[this, duration](const std_msgs::msg::Empty::SharedPtr msg) { this->manualGyroBiasEstimation(500, duration); }
+					[this, duration](const std_msgs::msg::Empty::SharedPtr) { this->manualGyroBiasEstimation(500, duration, "trigger"); }
 				);
 
 				RCLCPP_INFO(m_node->get_logger(), "Manual Gyro Bias Estimation enabled. Interval: %d seconds, Duration: %d seconds.", event_interval, duration);
