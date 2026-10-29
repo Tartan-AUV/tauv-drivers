@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -35,6 +36,30 @@ class KvhNode : public rclcpp::Node {
         base_frame_id_ = declare_parameter<std::string>("base_frame_id", "os/base_link");
         // false falls back to stamping with host receive time
         use_imu_timestamps_ = declare_parameter<bool>("use_imu_timestamps", true);
+
+        // Gyro corrections, all off by default. Either a startup bias taken at
+        // rest (already contains the Earth rate), or a stored sensor bias from
+        // scripts/fog_two_position_cal.py together with earth_rate_compensation.
+        earth_rate_compensation_ = declare_parameter<bool>("earth_rate_compensation", false);
+        const double latitude_deg = declare_parameter<double>("latitude_deg", 40.44);
+        earth_rate_up_ = 7.2921159e-5 * std::sin(latitude_deg * M_PI / 180.0);
+        startup_bias_seconds_ = declare_parameter<double>("startup_bias_seconds", 0.0);
+        startup_bias_max_std_ = declare_parameter<double>("startup_bias_max_std", 8.7e-4);  // rad/s
+        const auto stored_bias = declare_parameter<std::vector<double>>("gyro_bias_deg_h", {0.0, 0.0, 0.0});
+        if (earth_rate_compensation_ && startup_bias_seconds_ > 0.0) {
+            RCLCPP_WARN(get_logger(), "earth_rate_compensation and startup_bias_seconds both set; "
+                                      "using startup bias only");
+            earth_rate_compensation_ = false;
+        }
+        if (stored_bias.size() == 3 && startup_bias_seconds_ <= 0.0 &&
+            (stored_bias[0] != 0.0 || stored_bias[1] != 0.0 || stored_bias[2] != 0.0)) {
+            const double from_deg_h = M_PI / 180.0 / 3600.0;
+            gyro_bias_ = tf2::Vector3(stored_bias[0], stored_bias[1], stored_bias[2]) * from_deg_h;
+            bias_done_ = true;
+            RCLCPP_INFO(get_logger(), "Using stored FOG gyro bias (deg/h, sensor frame): %.2f %.2f %.2f%s",
+                        stored_bias[0], stored_bias[1], stored_bias[2],
+                        earth_rate_compensation_ ? " + Earth-rate compensation" : "");
+        }
 
         // Independent frames
         frame_id_gyro_ = declare_parameter<std::string>("frame_id_gyro", "imu_link_fog_gyro");
@@ -131,6 +156,7 @@ class KvhNode : public rclcpp::Node {
             // GRAVITY REMOVAL MATH
             // ==========================================
             tf2::Vector3 accel_no_g(accel.x, accel.y, accel.z);
+            tf2::Vector3 gyro_out(gyro.x, gyro.y, gyro.z);
 
             // 1. Fetch static TF once (avoids heavy lookups in the 500Hz loop)
             if (!static_tf_acquired_) {
@@ -165,6 +191,20 @@ class KvhNode : public rclcpp::Node {
                 accel_no_g.setX(accel.x - gravity_imu.x());
                 accel_no_g.setY(accel.y - gravity_imu.y());
                 accel_no_g.setZ(accel.z - gravity_imu.z());
+
+                // The gyro also senses Earth's rotation; remove its vertical
+                // component (needs only roll/pitch, so unreferenced yaw is fine).
+                if (earth_rate_compensation_) {
+                    const tf2::Vector3 earth_world(0.0, 0.0, earth_rate_up_);
+                    gyro_out -= tf2::quatRotate(static_base_imu_quat_,
+                                                tf2::quatRotate(q_odom_base.inverse(), earth_world));
+                }
+            }
+
+            if (startup_bias_seconds_ > 0.0 && !bias_done_) {
+                updateStartupBias(gyro_out);
+            } else if (bias_done_) {
+                gyro_out -= gyro_bias_;
             }
 
             // ==========================================
@@ -173,9 +213,9 @@ class KvhNode : public rclcpp::Node {
             auto msg_gyro = std::make_unique<sensor_msgs::msg::Imu>();
             msg_gyro->header.frame_id = frame_id_gyro_;
             msg_gyro->header.stamp = stamp;
-            msg_gyro->angular_velocity.x = gyro.x;
-            msg_gyro->angular_velocity.y = gyro.y;
-            msg_gyro->angular_velocity.z = gyro.z;
+            msg_gyro->angular_velocity.x = gyro_out.x();
+            msg_gyro->angular_velocity.y = gyro_out.y();
+            msg_gyro->angular_velocity.z = gyro_out.z();
             msg_gyro->orientation_covariance[0] = -1.0;
             msg_gyro->linear_acceleration_covariance[0] = -1.0;
             msg_gyro->angular_velocity_covariance[0] = gyro_var_;
@@ -225,6 +265,38 @@ class KvhNode : public rclcpp::Node {
             msg_az->linear_acceleration_covariance[8] = accel_var_;
             accel_z_pub_->publish(std::move(msg_az));
         }
+    }
+
+    // Averages the gyro over startup_bias_seconds; restarts the window if the
+    // spread shows the vehicle was moving.
+    void updateStartupBias(const tf2::Vector3& w) {
+        const auto now_steady = std::chrono::steady_clock::now();
+        if (bias_n_ == 0) {
+            bias_start_ = now_steady;
+        }
+        bias_sum_ += w;
+        bias_sq_ += w * w;
+        bias_n_++;
+        if (now_steady - bias_start_ < std::chrono::duration<double>(startup_bias_seconds_)) {
+            return;
+        }
+
+        const tf2::Vector3 mean = bias_sum_ / static_cast<double>(bias_n_);
+        const tf2::Vector3 var = bias_sq_ / static_cast<double>(bias_n_) - mean * mean;
+        const double max_std = std::sqrt(std::max({var.x(), var.y(), var.z(), 0.0}));
+        const double to_deg_h = 180.0 / M_PI * 3600.0;
+        if (max_std <= startup_bias_max_std_) {
+            gyro_bias_ = mean;
+            bias_done_ = true;
+            RCLCPP_INFO(get_logger(), "FOG startup gyro bias over %lu samples (deg/h): %.2f %.2f %.2f, max std %.4f deg/s",
+                        bias_n_, mean.x() * to_deg_h, mean.y() * to_deg_h, mean.z() * to_deg_h,
+                        max_std * 180.0 / M_PI);
+        } else {
+            RCLCPP_WARN(get_logger(), "FOG startup bias: vehicle moving (max std %.4f deg/s), retrying",
+                        max_std * 180.0 / M_PI);
+        }
+        bias_sum_ = bias_sq_ = tf2::Vector3(0, 0, 0);
+        bias_n_ = 0;
     }
 
     // Every 5 s: WARN if anything went wrong in the window, otherwise an INFO
@@ -310,6 +382,18 @@ class KvhNode : public rclcpp::Node {
     uint64_t window_status_errors_{0};
     int64_t window_latency_sum_ns_{0};
     int64_t window_latency_max_ns_{0};
+
+    // Gyro corrections (read thread only)
+    bool earth_rate_compensation_{false};
+    double earth_rate_up_{0.0};
+    double startup_bias_seconds_{0.0};
+    double startup_bias_max_std_{0.0};
+    bool bias_done_{false};
+    tf2::Vector3 gyro_bias_{0, 0, 0};
+    tf2::Vector3 bias_sum_{0, 0, 0};
+    tf2::Vector3 bias_sq_{0, 0, 0};
+    uint64_t bias_n_{0};
+    std::chrono::steady_clock::time_point bias_start_;
 };
 
 }  // namespace tauv_kvh
