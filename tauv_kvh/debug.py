@@ -1,3 +1,22 @@
+"""KVH 1775 serial debug tool.
+
+  python3 debug.py           configure the IMU (CONFIG_COMMANDS), then dump the raw stream
+  python3 debug.py --query   read back the current settings and exit (changes nothing)
+
+Stop the ROS driver first; only one process can own the port.
+
+Settings read back from our unit on 2026-10-28 with --query (known good):
+  AXES       identity (+1,0,0, 0,+1,0, 0,0,+1)
+  ROTFMT     RATE          ROTUNITS   RAD
+  LINFMT     ACCEL         LINUNITS   METERS
+  FILTEN     1             FILTTYPE   G,BUTTER,8,250.00 / A,BUTTER,8,250.00
+  DR         500           BAUD       460800
+  OUTPUTFMT  B             MSYNC      IMU
+  TEMPUNITS  C
+Measured the same day with a 180 deg yaw two-position test: gyro scale 1.01,
+bias ~-3.7 deg/h horizontal and ~-3.4 deg/h vertical (spec +-0.5 deg/h).
+"""
+import sys
 import serial
 import time
 
@@ -9,8 +28,8 @@ CONFIG_COMMANDS = [
     "=outputfmt,B",
     "=baud,460800",
     "=dr,500",
-    "=angunits,RAD",
-    "=angfmt,RATE",
+    "=rotunits,RAD",   # the manual's command; "=angunits" is rejected as INVALID
+    "=rotfmt,RATE",    # factory default is DELTA (angle per sample)
     "=linunits,METERS",
     "=linfmt,ACCEL",
     "=filttype,G,BUTTER",
@@ -36,6 +55,25 @@ def configure(ser):
     time.sleep(0.5)
     ser.reset_input_buffer()
     print("--- Configuration done, starting stream ---\n")
+
+QUERY_COMMANDS = [
+    "?axes", "?rotfmt", "?rotunits", "?linfmt", "?linunits", "?filten",
+    "?filttype,g", "?filttype,a", "?dr", "?baud", "?outputfmt", "?msync", "?tempunits",
+]
+
+def query(ser):
+    print("--- Current IMU settings ---")
+    send_command(ser, "=config,1")
+    time.sleep(0.3)
+    for cmd in QUERY_COMMANDS:
+        ser.reset_input_buffer()
+        send_command(ser, cmd)
+    send_command(ser, "=config,0")
+
+if "--query" in sys.argv:
+    ser = serial.Serial(PORT, BAUD, timeout=0.3)
+    query(ser)
+    sys.exit(0)
 
 ser = serial.Serial(PORT, BAUD, timeout=0)
 configure(ser)
