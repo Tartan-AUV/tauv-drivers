@@ -16,9 +16,23 @@ DvlConverter::DvlConverter(std::string prefix) : Node("dvl_converter"), prefix_(
                                                    std::placeholders::_1));
     //Creates publish as TwistWithCovarianceStamped
     pub_ = create_publisher<geometry_msgs::msg::TwistWithCovarianceStamped>(prefix_ + "/sensors/dvl", 10);
+    // Whether the latest DVL report was usable; for dashboards. Raw /dvl/data keeps every frame.
+    valid_pub_ = create_publisher<std_msgs::msg::Bool>(prefix_ + "/sensors/dvl/valid", 10);
 }
 
 void DvlConverter::dvlCallback(const dvl_msgs::msg::DVL::SharedPtr msg) {
+    // Frames the DVL flags invalid often still carry a plausible velocity with a tiny covariance,
+    // so the EKF would trust them; keep them off the EKF topic.
+    std_msgs::msg::Bool valid;
+    valid.data = msg->velocity_valid && msg->covariance.size() >= 9;
+    valid_pub_->publish(valid);
+    if (!valid.data) {
+        dropped_++;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Dropping invalid DVL frame (%lu dropped so far)", dropped_);
+        return;
+    }
+
     // Create twist message to store DVL velocity data
     geometry_msgs::msg::TwistWithCovarianceStamped twist;
 

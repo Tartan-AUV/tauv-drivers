@@ -46,6 +46,7 @@ ament_target_dependencies(dvl_converter
     rclcpp
     dvl_msgs
     geometry_msgs
+    std_msgs
 )
 
 # imu_converter executable
