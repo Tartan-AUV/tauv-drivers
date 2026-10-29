@@ -67,7 +67,17 @@ private:
     
     std::chrono::steady_clock::time_point first_time;
     std::chrono::steady_clock::time_point first_time_error;
-    
+
+    // Connection handling and line buffering
+    bool connected_ = false;
+    bool acoustic_enabled_ = false;
+    bool stamp_at_ping_ = false;
+    std::string rx_buffer_;
+    std::chrono::steady_clock::time_point last_connect_attempt_;
+    bool tryConnect();
+    void dropConnection(const std::string &reason);
+    void handle_line(const std::string &line);
+
     rclcpp::TimerBase::SharedPtr timer_receive;
     rclcpp::TimerBase::SharedPtr timer_send;
     rclcpp::Publisher<dvl_msgs::msg::DVL>::SharedPtr dvl_pub_report;
