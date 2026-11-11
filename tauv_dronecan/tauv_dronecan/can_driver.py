@@ -16,6 +16,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray,String
 import dronecan
 import time
+import math
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 import numpy as np
 from tauv_dronecan.rpm_to_gain import rpm_to_gain
 from tauv_dronecan.mapping import mapping
@@ -41,6 +43,9 @@ class CANDriver(Node):
         self.declare_parameter('startup_voltage_min_v', 14.0)
         self.declare_parameter('undervoltage_cutoff_v', 12.3)
         self.declare_parameter('undervoltage_hold_sec', 5.0)
+        self.declare_parameter('watchdog_topic', 'watchdog/system_state')
+        self.declare_parameter('watchdog_timeout_s', 1.5)
+        self.declare_parameter('watchdog_require_rearm_edge', False)
 
         interface = self.get_parameter('interface').value
         node_id = self.get_parameter('node_id').value
@@ -54,6 +59,15 @@ class CANDriver(Node):
         # Monotonic timestamp of the first sample below the cutoff, or None if the
         # pack is currently above it.
         self._undervoltage_since = None
+        self.watchdog_timeout_s = self.get_parameter('watchdog_timeout_s').value
+        if not math.isfinite(self.watchdog_timeout_s) or self.watchdog_timeout_s <= 0:
+            raise ValueError('watchdog_timeout_s must be finite and positive')
+        self.watchdog_require_rearm_edge = self.get_parameter(
+            'watchdog_require_rearm_edge').value
+        self._watchdog_ok = False
+        self._last_watchdog_time = None
+        # A healthy watchdog grants permission, never an arm request.
+        self._rearm_ready = False
         # Minimum seconds between esc_telemetry publishes per ESC (0 => unthrottled).
         self.telemetry_period_s = 1.0 / telemetry_rate_hz if telemetry_rate_hz > 0.0 else 0.0
         self._last_telem_pub_time = {}
@@ -119,8 +133,8 @@ class CANDriver(Node):
         )
         
         self.get_logger().info("Discovering ESC nodes...")
-        start_time = time.time()
-        while ((time.time() - start_time) < discovery_time) or (len(self.discovered_escs) < self.esc_count):
+        start_time = time.monotonic()
+        while ((time.monotonic() - start_time) < discovery_time) or (len(self.discovered_escs) < self.esc_count):
             try:
                 self.dronecan_node.spin(timeout=0.01)
             except dronecan.transport.TransferError:
@@ -128,9 +142,10 @@ class CANDriver(Node):
         
         self.get_logger().info(f'Found {len(self.discovered_escs)} ESCs: {self.discovered_escs}')
 
-        if self._startup_voltage_ok():
-            self.arm()
-        else:
+        # Preserve discovery/DNA lifetime; battery health alone cannot arm.
+        # The original discovery loop waits for every configured ESC.
+        self.disarm()
+        if not self._startup_voltage_ok():
             # Latched refusal: nothing sets BIGARM back to True, so the node runs
             # (telemetry keeps publishing) but never commands the thrusters.
             self.BIGARM = False
@@ -149,9 +164,10 @@ class CANDriver(Node):
         )
         self.watchdog_sub= self.create_subscription(
             String,
-            'watchdog/system_state',
+            self.get_parameter('watchdog_topic').value,
             self._watchdog_callback,
-            10
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.VOLATILE)
         )
 
         
@@ -228,9 +244,8 @@ class CANDriver(Node):
     def _check_undervoltage(self):
         """Kill the thrusters if the pack holds below the cutoff for undervoltage_hold_sec.
 
-        Like the watchdog kill this clears BIGARM, which latches: nothing sets it
-        back to True, so a pack that sags under load and bounces back once the
-        thrusters stop cannot silently re-arm itself.
+        This clears BIGARM independently of the resettable watchdog gate.
+        Watchdog recovery cannot clear this battery lockout; restart is required.
         """
         if not self.BIGARM:
             return  # already killed
@@ -306,34 +321,55 @@ class CANDriver(Node):
         # self.get_logger().info(f"Remapped thrusts: {autonomy_thrusts} -> Gains: {gain_thrusts} at V={voltage:.2f}")
         return out
 
+    def _watchdog_stop(self, reason):
+        if self._watchdog_ok or self.armed:
+            self.get_logger().warn(reason)
+        self._watchdog_ok = False
+        self._rearm_ready = False
+        self.disarm()
+
+    def _watchdog_is_fresh(self, now):
+        return (self._watchdog_ok and self._last_watchdog_time is not None
+                and now - self._last_watchdog_time < self.watchdog_timeout_s)
+
     def _watchdog_callback(self, msg):
-        if msg.data == "continue":
-            self.get_logger().debug("Received OK from watchdog")
-            # self.BIGARM = True
-            self.armed = True
-            
-            
-        elif msg.data == "kill":
-            # Any non-OK state is treated as a kill. Disarm AND zero throttles so
-            # the ESCs are commanded off directly, rather than relying solely on
-            # the ESCs honoring ArmingStatus=0 (we keep broadcasting RawCommand
-            # every tick, so the ESC no-message failsafe never engages).
-            self.get_logger().warn(f"Watchdog reported {msg.data} - disarming and zeroing throttles")
-            self.BIGARM = False
-            self.throttles = [0.0] * self.esc_count
+        now = time.monotonic()
+        # Detect gaps even if a recovered heartbeat arrives before the timer.
+        if not self._watchdog_is_fresh(now):
+            self._watchdog_stop('Watchdog unavailable or expired')
+        self._last_watchdog_time = now
+        # Canonical protocol is continue/kill; accept the previous OK/ERROR
+        # producer during migration. Every other value fails closed.
+        if msg.data in ("continue", "OK"):
+            self._watchdog_ok = True
+        else:
+            self._watchdog_stop(f'Watchdog reported {msg.data!r}')
+        # Send zero commands immediately on kill; continue never arms.
+        if not self._watchdog_ok:
+            self._send_commands()
 
     def _thruster_callback(self, msg):
-
-        if(len(msg.thrust) != self.esc_count):
-            self.get_logger().warn(f'Received thrust array of length {len(msg.thrust)}, expected {self.esc_count}')
+        if not self._watchdog_is_fresh(time.monotonic()):
+            self._watchdog_stop('Watchdog unavailable or expired')
             return
-        if(not msg.armed or not self.BIGARM):
-            self.throttles = self._remap_thrusts(msg.thrust)
+        if not self.BIGARM:
+            self._rearm_ready = False
             self.disarm()
             return
-
-        self.armed = True
-        self.throttles = self._remap_thrusts(msg.thrust)
+        if len(msg.thrust) != self.esc_count:
+            self.get_logger().warn(
+                f'Received thrust array of length {len(msg.thrust)}, expected {self.esc_count}')
+            return
+        if not msg.armed:
+            self.disarm()
+            self._rearm_ready = True
+            return
+        if self.watchdog_require_rearm_edge and not self._rearm_ready:
+            self.disarm()
+            return
+        throttles = self._remap_thrusts(msg.thrust)
+        self.arm()
+        self.throttles = throttles if self.armed else [0.0] * self.esc_count
 
     def _send_commands(self):
 
@@ -341,14 +377,16 @@ class CANDriver(Node):
         # sends ArmingStatus=0 and zeroed throttles.
         self._check_undervoltage()
 
-        armed = self.armed and self.BIGARM
+        if not self._watchdog_is_fresh(time.monotonic()):
+            self._watchdog_stop('Watchdog unavailable or expired')
+        armed = self.armed and self.BIGARM and self._watchdog_ok
 
         arming_msg = dronecan.uavcan.equipment.safety.ArmingStatus(
             status=255 if armed else 0
         )
         self.dronecan_node.broadcast(arming_msg)
 
-        # BIGARM is authoritative on the wire: while killed we never put a nonzero
+        # All safety gates are authoritative on the wire: never put a nonzero
         # command on the bus, no matter what left self.throttles set.
         throttles = self.throttles if armed else [0.0] * self.esc_count
         raw_values = [int(t * 1) for t in throttles]
@@ -363,8 +401,14 @@ class CANDriver(Node):
     
     def arm(self):
         
-        self.armed = True
-        self.get_logger().info('ESCs ARMED')
+        if (self.BIGARM
+                and (not self.watchdog_require_rearm_edge or self._rearm_ready)
+                and self._watchdog_is_fresh(time.monotonic())):
+            if not self.armed:
+                self.get_logger().info('ESCs ARMED')
+            self.armed = True
+        else:
+            self.disarm()
     
     def disarm(self):
         self.armed = False
