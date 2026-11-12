@@ -31,13 +31,28 @@ this tells the state estimator to fuse **only** the Z measurement.
 | `variance` | `0.001` | Variance (m²) placed on the Z-position covariance entry. |
 
 The sensor is configured for **fresh water** density (`DENSITY_FRESHWATER`). For
-salt-water pool/ocean work, adjust `setFluidDensity()` in `depth.py`.
+salt-water pool/ocean work, change the `setFluidDensity()` call in
+`Bar02Node::initializeSensor()` in `src/depth_node.cpp` (e.g. to
+`DENSITY_SALTWATER`) and rebuild.
 
 ## Files
 
-- `tauv_depth/depth.py` — the `Bar02Node` ROS wrapper (entry point `depth`).
-- `tauv_depth/ms5837.py` — low-level MS5837 I²C register/calibration driver
-  (adapted from Blue Robotics' reference library).
+- `include/tauv_depth/depth_node.hpp`, `src/depth_node.cpp` — the `Bar02Node`
+  ROS 2 (`rclcpp`) node (executable `depth`).
+- `include/tauv_depth/ms5837.hpp`, `src/ms5837.cpp` — low-level MS5837 I²C
+  register/calibration driver using Linux `/dev/i2c-*` (ported from Blue
+  Robotics' reference Python library).
+- `CMakeLists.txt`, `package.xml` — `ament_cmake` build configuration.
+
+## Building
+
+```bash
+colcon build --packages-select tauv_depth
+source install/setup.bash
+```
+
+If the package was previously built as `ament_python`, remove the stale
+`build/tauv_depth` and `install/tauv_depth` directories before rebuilding.
 
 ## Running
 
