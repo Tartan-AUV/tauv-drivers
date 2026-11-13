@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
+find_package(Threads REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -20,7 +21,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 set(DRIVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/KVH_1775_IMU_driver)
 
 # --------------------------------------------------------------------------
-# Static library: reuse existing C/C++ driver sources unchanged
+# Static library: standalone serial and packet processing
 # --------------------------------------------------------------------------
 add_library(imu_driver_lib STATIC
   ${DRIVER_DIR}/crc.c
@@ -39,7 +40,7 @@ set_target_properties(imu_driver_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # --------------------------------------------------------------------------
 add_library(tauv_kvh SHARED src/kvh_node.cpp)
 target_include_directories(tauv_kvh PRIVATE ${DRIVER_DIR})
-target_link_libraries(tauv_kvh imu_driver_lib)
+target_link_libraries(tauv_kvh imu_driver_lib Threads::Threads)
 ament_target_dependencies(tauv_kvh rclcpp sensor_msgs rclcpp_components nav_msgs tf2 tf2_ros tf2_geometry_msgs)
 
 rclcpp_components_register_node(tauv_kvh

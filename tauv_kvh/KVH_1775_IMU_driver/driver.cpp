@@ -1,7 +1,8 @@
 
 #include <unistd.h>
 
-#include <cassert>
+#include <algorithm>
+#include <array>
 #include <cstdint>
 
 #include "constants.h"
@@ -54,6 +55,7 @@ void Driver::reset() {
     checksum_is_ok_    = false;
     no_internal_error_ = true;
     serial_driver_.buffer_.reset();
+    have_sequence_ = false;
 }
 
 void Driver::forceState(bool checksum_is_ok, bool no_internal_error) {
@@ -61,85 +63,63 @@ void Driver::forceState(bool checksum_is_ok, bool no_internal_error) {
     no_internal_error_ = no_internal_error;
 }
 
-// returns true if a new datagram was found in the byte stream. Whether the
-// CRC check passes is another matter
+uint8_t Driver::getInternalMeasurmentCounter() const { return sensor_data_.counter; }
+
 bool Driver::tryReadingNewPacket() {
-    int64_t bytesRead = serial_driver_.readBytes();
-    if (bytesRead < 1) {
-        return false;
+    if (connection_ != serial_driver_.statistics().connections) {
+        connection_ = serial_driver_.statistics().connections;
+        have_sequence_ = false;
     }
-
-    bool foundDatagram = false;
-    // try to find a full datagram in the circular buffer
-    while (DATAGRAM_SIZE <= serial_driver_.buffer_.size()) {
-        // remove bytes from buffer until it begins with the expected header
-        while (not foundDatagram) {
-            if (serial_driver_.buffer_.size() < DATAGRAM_SIZE) {
-                return false;   // not enough bytes
-            }
-
-            // check to see if the first 4 bytes match the expected header
-            int i = 0;
-            uint32_t parsed_header{};
-            for (uint8_t byte : serial_driver_.buffer_) {
-                if (4 <= i) {
-                    break;
-                }
-                parsed_header = (parsed_header << 8u) | (uint32_t)byte;
-                i++;
-            }
-            foundDatagram = (parsed_header == HEADER);
-
-            if (not foundDatagram) {
-                serial_driver_.buffer_.remove();
-            }
-        }
-
-        // copying to an array because later parsing code requires + and <
-        // iterator operators, but idk how to define those operators
-        // for a circular buffer. Array iterators are easier to work with.
-        uint8_t tmp[DATAGRAM_SIZE];
-        int i = 0;
-        for (uint8_t byte : serial_driver_.buffer_) {
-            if (DATAGRAM_SIZE <= i) {
-                break;
-            }
-            tmp[i] = byte;
-            i++;
-        }
-
-        // check status bytes for error and compute checksum
-        auto* it = tmp + N_BYTES_HEADER;   // start parsing after the header
-        no_internal_error_ = parseDatagram(it, sensor_data_);
-
-        auto* begin       = tmp;
-        uint32_t checksum = calculateChecksum(begin, it);
-        checksum_is_ok_   = (checksum == sensor_data_.crc);
-        if (checksum_is_ok_) {
-            // clear the datagram that was just parsed
-            for (int j = 0; j < DATAGRAM_SIZE; j++) {
-                serial_driver_.buffer_.remove();
-            }
-            return true;
-        }
-
-        // checksum failed: the datagram was corrupted or the 1st byte
-        // happened to match the start byte; remove it and reparse
-        serial_driver_.buffer_.remove();
+    // Consume a burst already in memory before polling the serial device again.
+    if (parseBufferedPacket()) return true;
+    if (serial_driver_.readBytes() < 1) return false;
+    if (connection_ != serial_driver_.statistics().connections) {
+        connection_ = serial_driver_.statistics().connections;
+        have_sequence_ = false;
     }
-
-    return foundDatagram;
+    return parseBufferedPacket();
 }
 
-constexpr uint8_t crc_buff_len = DATAGRAM_SIZE - N_BYTES_CRC;
+bool Driver::parseBufferedPacket() {
+    auto& buffer = serial_driver_.buffer_;
+    while (buffer.size() >= DATAGRAM_SIZE) {
+        uint32_t header = 0;
+        auto it_buffer = buffer.begin();
+        for (int i = 0; i < N_BYTES_HEADER; ++i, ++it_buffer) header = (header << 8u) | *it_buffer;
+        if (header != HEADER) {
+            buffer.remove(); ++statistics_.discarded_bytes; continue;
+        }
+        std::array<uint8_t, DATAGRAM_SIZE> bytes{};
+        std::copy_n(buffer.begin(), DATAGRAM_SIZE, bytes.begin());
+        auto* it = bytes.data() + N_BYTES_HEADER;
+        SensorData candidate{};
+        const bool status_ok = parseDatagram(it, candidate);
+        if (calculateChecksum(bytes.data(), it) != candidate.crc) {
+            ++statistics_.crc_failures;
+            buffer.remove(); ++statistics_.discarded_bytes;
+            continue;  // Search for the full header again after every failed candidate.
+        }
+        for (int i = 0; i < DATAGRAM_SIZE; ++i) buffer.remove();
+        sensor_data_ = candidate;
+        checksum_is_ok_ = true;
+        no_internal_error_ = status_ok;
+        ++statistics_.valid_packets;
+        if (!status_ok) ++statistics_.status_failures;
+        if (have_sequence_) {
+            const unsigned delta = (candidate.counter - last_sequence_) & 0x7f;
+            if (delta == 0) ++statistics_.duplicate_packets;
+            else statistics_.sequence_gaps += delta - 1;
+        }
+        have_sequence_ = true;
+        last_sequence_ = candidate.counter;
+        return true;
+    }
+    checksum_is_ok_ = false;
+    return false;
+}
+
 uint32_t calculateChecksum(const buffer_iterator_t& begin,
                            const buffer_iterator_t& end) {
-    uint8_t buff[crc_buff_len];
-    std::copy(begin, end - N_BYTES_CRC, buff);
-    crc_t crc = crc_init();
-    for (unsigned char& byte : buff) {
-        crc = crc_update(crc, &byte, 1);
-    }
-    crc = crc_finalize(crc);
-    return crc;
+    return static_cast<uint32_t>(crc_finalize(crc_update(
+        crc_init(), begin, static_cast<size_t>(end - begin - N_BYTES_CRC))));
 }

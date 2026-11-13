@@ -43,10 +43,10 @@ bool parseDatagram(buffer_iterator_t& it, SensorData& sensor_data) {
     sensor_data.accel.y = ACC_SCALE * parseSPFP(it);
     sensor_data.accel.z = ACC_SCALE * parseSPFP(it);
 
-    // Format B: 32-bit microsecond timestamp (wraps every ~71 minutes)
+    // Format B: big-endian microsecond timestamp.
     sensor_data.imu_timestamp_us = parseUnsigned(it, 4);
 
-    uint8_t status       = parseUnsigned(it, N_BYTES_STATUS);
+    sensor_data.status = parseUnsigned(it, N_BYTES_STATUS);
     sensor_data.counter  = parseUnsigned(it, N_BYTES_COUNTER);
 
     // Format B: 16-bit signed temperature
@@ -55,5 +55,5 @@ bool parseDatagram(buffer_iterator_t& it, SensorData& sensor_data) {
     sensor_data.crc = parseUnsigned(it, N_BYTES_CRC);
 
     const uint8_t nominal_status = 0b0111'0111;
-    return status == nominal_status;
+    return sensor_data.status == nominal_status;
 }

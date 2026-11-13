@@ -2,12 +2,12 @@ import serial
 import time
 
 PORT = "/dev/ttyTHS1"
-BAUD = 921600
+BAUD = 460800
 
 CONFIG_COMMANDS = [
     "=config,1",
     "=outputfmt,B",
-    "=baud,921600",
+    f"=baud,{BAUD}",
     "=dr,500",
     "=angunits,RAD",
     "=angfmt,RATE",

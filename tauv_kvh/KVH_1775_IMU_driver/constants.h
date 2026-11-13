@@ -3,7 +3,7 @@
 
 #include <termios.h>   // for baudrate id's
 
-#include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 // All constants taken from:
@@ -31,12 +31,10 @@ constexpr uint32_t HEADER = Message_Format_B_HEADER;
 
 constexpr uint8_t DATAGRAM_SIZE = 40;
 
-// Baudrate
-constexpr auto BAUD_ID   = B921600;
-constexpr auto BAUD_RATE = 921600;   // [bits/s]
+// Match the vehicle IMU configuration: 500 Hz at 460800 baud.
+constexpr unsigned int BAUD_RATE = 460800;
+constexpr uint32_t DATAGRAM_TRANSIT_TIME_us = DATAGRAM_SIZE * 10 * 1000000ULL / BAUD_RATE;
+constexpr size_t SERIAL_BUFFER_SIZE = 4096;
+constexpr size_t SERIAL_READ_SIZE = 2048;
 
-// assume 10 bits/serial_byte (1 start bit + 8 bits/data_byte + 1 stop bit)
-constexpr uint32_t DATAGRAM_TRANSIT_TIME_us =
-    (uint32_t)((DATAGRAM_SIZE * 10) / (BAUD_RATE / 1e6));   // [us]
-
-#endif   // CONSTANTS_H
+#endif  // CONSTANTS_H

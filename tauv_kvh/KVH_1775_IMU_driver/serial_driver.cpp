@@ -13,7 +13,9 @@ void SerialDriver::resetPath(const std::string& new_serial_port_name) {
 }
 
 SerialDriver::~SerialDriver() {
-    ::close(file_handle_);
+    if (file_handle_ >= 0) {
+        ::close(file_handle_);
+    }
 }
 
 bool SerialDriver::isPortOpened() const {

@@ -3,23 +3,21 @@
 <package format="3">
   <name>tauv_kvh</name>
   <version>0.1.0</version>
-  <description>ROS 2 driver node for the KVH 1775 FOG IMU (Format B, 1000 Hz)</description>
+  <description>ROS 2 driver node for the KVH 1775 FOG IMU (Format B, 500 Hz vehicle configuration)</description>
   <maintainer email="aamahesh@andrew.cmu.edu">Tartan AUV</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <build_depend>rclcpp</build_depend>
-  <build_depend>sensor_msgs</build_depend>
-
-  <exec_depend>rclcpp</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>rclcpp_components</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>tf2</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>tf2_geometry_msgs</exec_depend>
-
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rclcpp_components</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -18,13 +18,14 @@ class SerialUnix : public SerialDriver {
     /**
      * @param: serial_port_name: device filepath (e.g. "/dev/ttyUSB0")
      */
-    explicit SerialUnix(const std::string &serial_port_name);
+    explicit SerialUnix(const std::string &serial_port_name, unsigned int baud_rate = BAUD_RATE);
     void open() override;
     ssize_t readBytes() override;
     void reconnect() override;
 
    private:
-    struct termios config_ {};
+    unsigned int baud_rate_ = BAUD_RATE;
+    void disconnect();
 };
 
 #endif   // SERIAL_UBUNTU_H

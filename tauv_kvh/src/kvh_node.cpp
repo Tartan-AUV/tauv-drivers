@@ -1,10 +1,9 @@
-#include <pthread.h>
-#include <sched.h>
-
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -19,12 +18,17 @@
 
 #include "driver.h"
 #include "serial_unix.h"
+#include "sample_queue.h"
 
 namespace tauv_kvh {
 
 class KvhNode : public rclcpp::Node {
    public:
     KvhNode(const rclcpp::NodeOptions& options) : Node("kvh_node", options) {
+        const auto baud = declare_parameter<int>("baud_rate", BAUD_RATE);
+        const auto queue_capacity = declare_parameter<int>("sample_queue_capacity", 1000);
+        if (queue_capacity <= 0) throw std::invalid_argument("sample_queue_capacity must be positive");
+        queue_ = std::make_unique<SampleQueue<Sample>>(static_cast<size_t>(queue_capacity));
         // Parameters
         port_ = declare_parameter<std::string>("port", "/dev/ttyTHS1");
         odom_topic_ = declare_parameter<std::string>("odom_topic", "/odometry/filtered");
@@ -43,11 +47,14 @@ class KvhNode : public rclcpp::Node {
         gyro_var_ = gyro_nd * gyro_nd * bw;
         accel_var_ = accel_nd * accel_nd * bw;
 
+        const auto publisher_depth = declare_parameter<int>("publisher_depth", 20);
+        if (publisher_depth <= 0) throw std::invalid_argument("publisher_depth must be positive");
+        const auto qos = rclcpp::QoS(rclcpp::KeepLast(static_cast<size_t>(publisher_depth)));
         // Publishers
-        gyro_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/gyro", 20);
-        accel_x_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/accel_x", 20);
-        accel_y_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/accel_y", 20);
-        accel_z_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/accel_z", 20);
+        gyro_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/gyro", qos);
+        accel_x_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/accel_x", qos);
+        accel_y_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/accel_y", qos);
+        accel_z_pub_ = create_publisher<sensor_msgs::msg::Imu>("os/sensors/fog_kvh/accel_z", qos);
 
         // Subscriptions & TF (For Gravity Removal)
         current_odom_base_quat_.setRPY(0, 0, 0); // Default to upright
@@ -62,7 +69,7 @@ class KvhNode : public rclcpp::Node {
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         // Construct driver
-        serial_ = std::make_unique<SerialUnix>(port_);
+        serial_ = std::make_unique<SerialUnix>(port_, static_cast<unsigned int>(baud));
         driver_ = std::make_unique<Driver>(*serial_);
 
         if (!serial_->isPortOpened()) {
@@ -71,41 +78,91 @@ class KvhNode : public rclcpp::Node {
             RCLCPP_INFO(get_logger(), "KVH 1775 connected on %s", port_.c_str());
         }
 
-        stop_flag_ = false;
-        read_thread_ = std::thread(&KvhNode::readLoop, this);
+        diagnostic_timer_ = create_wall_timer(std::chrono::seconds(5), [this] {
+            RCLCPP_INFO(get_logger(),
+                "KVH totals: bytes=%llu packets=%llu crc_failures=%llu status_failures=%llu "
+                "sequence_gaps=%llu duplicates=%llu io_errors=%llu connections=%llu "
+                "discarded_bytes=%llu queue_drops=%llu gyro_published=%llu accel_published=%llu",
+                static_cast<unsigned long long>(bytes_received_.load()),
+                static_cast<unsigned long long>(packets_.load()),
+                static_cast<unsigned long long>(crc_failures_.load()),
+                static_cast<unsigned long long>(status_failures_.load()),
+                static_cast<unsigned long long>(sequence_gaps_.load()),
+                static_cast<unsigned long long>(duplicates_.load()),
+                static_cast<unsigned long long>(io_errors_.load()),
+                static_cast<unsigned long long>(connections_.load()),
+                static_cast<unsigned long long>(discarded_bytes_.load()),
+                static_cast<unsigned long long>(queue_drops_.load()),
+                static_cast<unsigned long long>(gyro_published_.load()),
+                static_cast<unsigned long long>(accel_published_.load()));
+        });
+        // Start the consumer first; unwind it safely if producer creation fails.
+        publish_thread_ = std::thread(&KvhNode::publishLoop, this);
+        try {
+            read_thread_ = std::thread(&KvhNode::readLoop, this);
+        } catch (...) {
+            queue_->close();
+            publish_thread_.join();
+            throw;
+        }
     }
 
     ~KvhNode() {
         stop_flag_ = true;
+        queue_->close();
         if (read_thread_.joinable()) {
             read_thread_.join();
         }
+        if (publish_thread_.joinable()) publish_thread_.join();
     }
 
    private:
-    void readLoop() {
-        const tf2::Vector3 GRAVITY_WORLD(0.0, 0.0, 9.79615);
+    struct Sample {
+        SensorData data{};
+        int64_t stamp_ns = 0;
+    };
 
+    void readLoop() {
         while (!stop_flag_) {
-            if (!driver_->tryReadingNewPacket()) {
-                if (!serial_->isPortOpened()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
+            const bool received = driver_->tryReadingNewPacket();
+            const auto& serial_stats = serial_->statistics();
+            const auto& packet_stats = driver_->statistics();
+            bytes_received_ = serial_stats.bytes_received;
+            connections_ = serial_stats.connections;
+            io_errors_ = serial_stats.io_errors;
+            packets_ = packet_stats.valid_packets;
+            crc_failures_ = packet_stats.crc_failures;
+            status_failures_ = packet_stats.status_failures;
+            sequence_gaps_ = packet_stats.sequence_gaps;
+            duplicates_ = packet_stats.duplicate_packets;
+            discarded_bytes_ = packet_stats.discarded_bytes;
+            if (!received) {
+                if (!serial_->isPortOpened()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
+            const auto receive_ns = now().nanoseconds();
+            Sample sample;
+            sample.data = driver_->data();
+            sample.stamp_ns = receive_ns;
+            if (queue_->push(sample)) ++queue_drops_;
+        }
+    }
 
-            if (!driver_->isChecksumGood() || !driver_->isSensorStatusGood()) {
-                continue; // Optionally add your warning throttles back here
-            }
-
-            auto stamp = computeTimestamp(driver_->getTimestampUs());
-            const auto gyro = driver_->getGyroData();
-            const auto accel = driver_->getAccData();
+    void publishLoop() {
+        const tf2::Vector3 GRAVITY_WORLD(0.0, 0.0, 9.79615);
+        Sample sample;
+        while (!stop_flag_ && queue_->pop(sample)) {
+            const rclcpp::Time stamp(sample.stamp_ns, get_clock()->get_clock_type());
+            const auto& gyro = sample.data.gyro;
+            const auto& accel = sample.data.accel;
 
             // ==========================================
             // GRAVITY REMOVAL MATH
             // ==========================================
-            tf2::Vector3 accel_no_g(accel.x, accel.y, accel.z);
+            tf2::Vector3 accel_no_g(
+                accelValid(sample.data, 0) ? accel.x : 0.0,
+                accelValid(sample.data, 1) ? accel.y : 0.0,
+                accelValid(sample.data, 2) ? accel.z : 0.0);
 
             // 1. Fetch static TF once (avoids heavy lookups in the 500Hz loop)
             if (!static_tf_acquired_) {
@@ -145,65 +202,73 @@ class KvhNode : public rclcpp::Node {
             // ==========================================
             // 1. GYRO PUBLISHER
             // ==========================================
-            auto msg_gyro = std::make_unique<sensor_msgs::msg::Imu>();
-            msg_gyro->header.frame_id = frame_id_gyro_;
-            msg_gyro->header.stamp = stamp;
-            msg_gyro->angular_velocity.x = gyro.x;
-            msg_gyro->angular_velocity.y = gyro.y;
-            msg_gyro->angular_velocity.z = gyro.z;
-            msg_gyro->orientation_covariance[0] = -1.0;
-            msg_gyro->linear_acceleration_covariance[0] = -1.0;
-            msg_gyro->angular_velocity_covariance[0] = gyro_var_;
-            msg_gyro->angular_velocity_covariance[4] = gyro_var_;
-            msg_gyro->angular_velocity_covariance[8] = gyro_var_;
-            gyro_pub_->publish(std::move(msg_gyro));
+            if (gyroValid(sample.data)) {
+                auto msg_gyro = std::make_unique<sensor_msgs::msg::Imu>();
+                msg_gyro->header.frame_id = frame_id_gyro_;
+                msg_gyro->header.stamp = stamp;
+                msg_gyro->angular_velocity.x = gyro.x;
+                msg_gyro->angular_velocity.y = gyro.y;
+                msg_gyro->angular_velocity.z = gyro.z;
+                msg_gyro->orientation_covariance[0] = -1.0;
+                msg_gyro->linear_acceleration_covariance[0] = -1.0;
+                msg_gyro->angular_velocity_covariance[0] = gyro_var_;
+                msg_gyro->angular_velocity_covariance[4] = gyro_var_;
+                msg_gyro->angular_velocity_covariance[8] = gyro_var_;
+                gyro_pub_->publish(std::move(msg_gyro));
+                ++gyro_published_;
+            }
 
             // ==========================================
             // 2. ACCEL X PUBLISHER (Using Gravity-Removed Data)
             // ==========================================
-            auto msg_ax = std::make_unique<sensor_msgs::msg::Imu>();
-            msg_ax->header.frame_id = frame_id_accel_x_;
-            msg_ax->header.stamp = stamp;
-            msg_ax->linear_acceleration.x = accel_no_g.x();
-            msg_ax->orientation_covariance[0] = -1.0;
-            msg_ax->angular_velocity_covariance[0] = -1.0;
-            msg_ax->linear_acceleration_covariance[0] = accel_var_;
-            msg_ax->linear_acceleration_covariance[4] = 1e9;
-            msg_ax->linear_acceleration_covariance[8] = 1e9;
-            accel_x_pub_->publish(std::move(msg_ax));
+            if (accelValid(sample.data, 0)) {
+                auto msg_ax = std::make_unique<sensor_msgs::msg::Imu>();
+                msg_ax->header.frame_id = frame_id_accel_x_;
+                msg_ax->header.stamp = stamp;
+                msg_ax->linear_acceleration.x = accel_no_g.x();
+                msg_ax->orientation_covariance[0] = -1.0;
+                msg_ax->angular_velocity_covariance[0] = -1.0;
+                msg_ax->linear_acceleration_covariance[0] = accel_var_;
+                msg_ax->linear_acceleration_covariance[4] = 1e9;
+                msg_ax->linear_acceleration_covariance[8] = 1e9;
+                accel_x_pub_->publish(std::move(msg_ax));
+                ++accel_published_;
+            }
 
             // ==========================================
             // 3. ACCEL Y PUBLISHER (Using Gravity-Removed Data)
             // ==========================================
-            auto msg_ay = std::make_unique<sensor_msgs::msg::Imu>();
-            msg_ay->header.frame_id = frame_id_accel_y_;
-            msg_ay->header.stamp = stamp;
-            msg_ay->linear_acceleration.y = accel_no_g.y();
-            msg_ay->orientation_covariance[0] = -1.0;
-            msg_ay->angular_velocity_covariance[0] = -1.0;
-            msg_ay->linear_acceleration_covariance[0] = 1e9;
-            msg_ay->linear_acceleration_covariance[4] = accel_var_;
-            msg_ay->linear_acceleration_covariance[8] = 1e9;
-            accel_y_pub_->publish(std::move(msg_ay));
+            if (accelValid(sample.data, 1)) {
+                auto msg_ay = std::make_unique<sensor_msgs::msg::Imu>();
+                msg_ay->header.frame_id = frame_id_accel_y_;
+                msg_ay->header.stamp = stamp;
+                msg_ay->linear_acceleration.y = accel_no_g.y();
+                msg_ay->orientation_covariance[0] = -1.0;
+                msg_ay->angular_velocity_covariance[0] = -1.0;
+                msg_ay->linear_acceleration_covariance[0] = 1e9;
+                msg_ay->linear_acceleration_covariance[4] = accel_var_;
+                msg_ay->linear_acceleration_covariance[8] = 1e9;
+                accel_y_pub_->publish(std::move(msg_ay));
+                ++accel_published_;
+            }
 
             // ==========================================
             // 4. ACCEL Z PUBLISHER (Using Gravity-Removed Data)
             // ==========================================
-            auto msg_az = std::make_unique<sensor_msgs::msg::Imu>();
-            msg_az->header.frame_id = frame_id_accel_z_;
-            msg_az->header.stamp = stamp;
-            msg_az->linear_acceleration.z = accel_no_g.z();
-            msg_az->orientation_covariance[0] = -1.0;
-            msg_az->angular_velocity_covariance[0] = -1.0;
-            msg_az->linear_acceleration_covariance[0] = 1e9;
-            msg_az->linear_acceleration_covariance[4] = 1e9;
-            msg_az->linear_acceleration_covariance[8] = accel_var_;
-            accel_z_pub_->publish(std::move(msg_az));
+            if (accelValid(sample.data, 2)) {
+                auto msg_az = std::make_unique<sensor_msgs::msg::Imu>();
+                msg_az->header.frame_id = frame_id_accel_z_;
+                msg_az->header.stamp = stamp;
+                msg_az->linear_acceleration.z = accel_no_g.z();
+                msg_az->orientation_covariance[0] = -1.0;
+                msg_az->angular_velocity_covariance[0] = -1.0;
+                msg_az->linear_acceleration_covariance[0] = 1e9;
+                msg_az->linear_acceleration_covariance[4] = 1e9;
+                msg_az->linear_acceleration_covariance[8] = accel_var_;
+                accel_z_pub_->publish(std::move(msg_az));
+                ++accel_published_;
+            }
         }
-    }
-
-    rclcpp::Time computeTimestamp(uint32_t imu_us) {
-        return this->now();
     }
 
     // Parameters
@@ -240,6 +305,13 @@ class KvhNode : public rclcpp::Node {
     // Read thread
     std::atomic<bool> stop_flag_{false};
     std::thread read_thread_;
+    std::thread publish_thread_;
+    std::unique_ptr<SampleQueue<Sample>> queue_;
+    rclcpp::TimerBase::SharedPtr diagnostic_timer_;
+    std::atomic<uint64_t> bytes_received_{0}, connections_{0}, io_errors_{0};
+    std::atomic<uint64_t> packets_{0}, crc_failures_{0}, status_failures_{0};
+    std::atomic<uint64_t> sequence_gaps_{0}, duplicates_{0}, queue_drops_{0}, discarded_bytes_{0};
+    std::atomic<uint64_t> gyro_published_{0}, accel_published_{0};
 };
 
 }  // namespace tauv_kvh

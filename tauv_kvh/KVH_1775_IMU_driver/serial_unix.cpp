@@ -1,213 +1,113 @@
 #include "serial_unix.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdexcept>
 #include <unistd.h>
 
-#include <cstring>   // for strerror_l()
-#include <iostream>
+namespace {
+speed_t baudId(unsigned int baud) {
+    switch (baud) {
+        case 9600: return B9600;
+        case 19200: return B19200;
+        case 38400: return B38400;
+        case 57600: return B57600;
+        case 115200: return B115200;
+#ifdef B460800
+        case 460800: return B460800;
+#endif
+#ifdef B921600
+        case 921600: return B921600;
+#endif
+#ifdef __APPLE__
+        // Darwin represents baud rates directly, unlike Linux's termios constants.
+        case 460800: return static_cast<speed_t>(460800);
+        case 921600: return static_cast<speed_t>(921600);
+#endif
+        default: throw std::invalid_argument("Unsupported KVH host baud rate");
+    }
+}
+}
 
-#include "constants.h"
-#include "serial_driver.h"
-#include "utils.h"
+SerialUnix::SerialUnix(const std::string& path, unsigned int baud)
+    : SerialDriver(path), baud_rate_(baud) {
+    (void)baudId(baud_rate_);  // Fail on unsupported configuration before starting threads.
+}
 
-#define errnoToString(savedErrno) strerror_l(savedErrno, uselocale((locale_t)0))
-
-using namespace std;
-
-// Everything is learned from
-// https://en.wikibooks.org/wiki/Serial_Programming/termios
-// "termios is the newer (now already a few decades old)
-// Unix API for terminal I/O"
-
-SerialUnix::SerialUnix(const std::string& serial_port_name)
-    : SerialDriver(serial_port_name) {
+void SerialUnix::disconnect() {
+    if (file_handle_ >= 0) ::close(file_handle_);
+    file_handle_ = -1;
+    openedPort_ = false;
+    buffer_.reset();
 }
 
 void SerialUnix::open() {
-    /*O_RDONLY: Opens the port for reading only
-    O_NOCTTY: The port never becomes the controlling terminal of the process
-    O_NDELAY: Use non-blocking I/O. On some systems this also means the RS232
-    DCD signal line is ignored*/
-    file_handle_   = ::open(serial_port_name_.c_str(),
-                            O_RDONLY | O_NOCTTY | O_NDELAY | O_CLOEXEC);
-    int savedErrno = errno;
-    if (file_handle_ == -1) {
-        cout << "IMU_DRIVER: Failed to close fd " << file_handle_ << ": "
-             << errnoToString(savedErrno) << "\n";
-
-        cout << "Failed to open IMU at " << serial_port_name_ << ": "
-             << errnoToString(savedErrno) << "\n";
-        openedPort_ = false;
-        return;
+    disconnect();
+    file_handle_ = ::open(serial_port_name_.c_str(), O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    if (file_handle_ < 0) { ++statistics_.io_errors; return; }
+    termios config{};
+    if (tcgetattr(file_handle_, &config) != 0) {
+        ++statistics_.io_errors; disconnect(); return;
     }
-
-    // Check if the file descriptor is pointing to a TTY device or not.
-    int retval = isatty(file_handle_);
-    savedErrno = errno;
-    if (retval != 1) {
-        cout << "Serial port is not TTY device: " << errnoToString(savedErrno)
-             << "\n";
-        return;
+    cfmakeraw(&config);
+    config.c_iflag &= ~(IGNCR | IXON | IXOFF | IXANY | IGNPAR);
+    config.c_cflag &= ~(CSIZE | PARENB | CSTOPB);
+#ifdef CRTSCTS
+    config.c_cflag &= ~CRTSCTS;
+#endif
+    config.c_cflag |= CS8 | CREAD | CLOCAL;
+    config.c_cc[VMIN] = 0;
+    config.c_cc[VTIME] = 0;
+    const auto speed = baudId(baud_rate_);
+    if (cfsetispeed(&config, speed) != 0 || cfsetospeed(&config, speed) != 0 ||
+        tcsetattr(file_handle_, TCSANOW, &config) != 0) {
+        ++statistics_.io_errors; disconnect(); return;
     }
-
-    // Get the current configuration of the serial interface
-    retval     = tcgetattr(file_handle_, &config_);
-    savedErrno = errno;
-    if (retval != 0) {
-        cout << "Couldn't retrieve current serial config: "
-             << errnoToString(savedErrno) << "\n";
-        return;
-    }
-
-    //
-    // Input flags - Turn off input processing
-    //
-    // convert break to null byte, no CR to NL translation,
-    // no NL to CR translation, don't mark parity errors or breaks
-    // no input parity check, don't strip high bit off,
-    // no XON/XOFF software flow control
-    //
-    config_.c_iflag &=
-        ~(IGNBRK | BRKINT | ICRNL | INLCR | PARMRK | INPCK | ISTRIP | IXON);
-
-    //
-    // Output flags - Turn off output processing
-    //
-    // no CR to NL translation, no NL to CR-NL translation,
-    // no NL to CR translation, no column 0 CR suppression,
-    // no Ctrl-D suppression, no fill characters, no case mapping,
-    // no local output processing
-    //
-    // config_.c_oflag &= ~(OCRNL | ONLCR | ONLRET |
-    //                     ONOCR | ONOEOT| OFILL | OLCUC | OPOST);
-    config_.c_oflag = 0;
-
-    //
-    // No line processing
-    //
-    // echo off, echo newline off, canonical mode off,
-    // extended input processing off, signal chars off
-    config_.c_lflag &= ~(ECHO | ECHONL | ICANON | IEXTEN | ISIG);
-
-    //
-    // Turn off character processing
-    //
-    // clear current char size mask, no parity checking,
-    // no output processing, force 8 bit input
-    config_.c_cflag &= ~(CSIZE | PARENB);
-    config_.c_cflag |= CS8;
-    // config_.c_cflag |= CSTOPB;   // 2 stop bits
-
-    config_.c_cc[VMIN]  = 1;   // One input byte is enough to return from read()
-    config_.c_cc[VTIME] = 0;   // Inter-character timer off
-
-    // Communication speed
-    retval     = cfsetispeed(&config_, BAUD_ID);
-    savedErrno = errno;
-    if (retval != 0) {
-        cout << "Input baud rate couldn't be set: " << errnoToString(savedErrno)
-             << "\n";
-        return;
-    }
-    retval     = cfsetospeed(&config_, BAUD_ID);
-    savedErrno = errno;
-    if (retval != 0) {
-        cout << "Output baud rate couldn't be set: "
-             << errnoToString(savedErrno) << "\n";
-        return;
-    }
-
-    // Finally, apply the configuration
-    retval     = tcsetattr(file_handle_, TCSAFLUSH, &config_);
-    savedErrno = errno;
-    if (retval != 0) {
-        cout << "Couldn't apply any serial settings: "
-             << errnoToString(savedErrno) << "\n";
-        return;
-    }
-
-    cout << "IMU connected successfully!\n";
-
+    // Do not flush unread input when applying attributes. Re-synchronize in the parser.
     openedPort_ = true;
-
-    /*TODO: do we need to set exclusive access to the serial device?
-        Code to accomplish setting exclusive access:
-       https://en.wikibooks.org/wiki/Serial_Programming/termios#Exclusive_Access
-        */
+    ++statistics_.connections;
 }
 
-void SerialUnix::reconnect() {
-    if (0 <= file_handle_) {
-        // only close the fd if it's nonnegative (i.e. open() returned a valid
-        // fd and we arent just trying to reconnect because open failed
-        // previously)
-        int closeResult = ::close(file_handle_);
-        int savedErrno  = errno;
-        if (-1 == closeResult) {
-            cout << "IMU_DRIVER: Failed to close fd " << file_handle_ << ": "
-                 << errnoToString(savedErrno) << "\n";
-        }
-    }
-    open();
-}
-
-static double last_hearbeat                = -1e99;   // [s]
-static double hearbeat_period              = 1.0;     // [s]
-static int bytes_read_since_last_heartbeat = 0;
+void SerialUnix::reconnect() { open(); }
 
 ssize_t SerialUnix::readBytes() {
-    double currTime = get_time();
-
-    // poll to check if file descriptor is ready for reading
-    struct pollfd pfd {};
-    pfd.fd     = file_handle_;
+    if (!openedPort_) {
+        open();
+        if (!openedPort_) return -1;
+    }
+    pollfd pfd{};
+    pfd.fd = file_handle_;
     pfd.events = POLLIN;
-
-    int ms_timeout = 1000;
-    int pollResult = poll(&pfd, 1, ms_timeout);
-    int savedErrno = errno;
-    if (pollResult < 1) {   // error
-        if (firstPollError or (currTime - timeOfLastPollErrMsgSent) > 5) {
-            cout << "IMU Driver Serial Port poll() error: "
-                 << errnoToString(savedErrno) << ". Attempting reconnect.\n";
-            reconnect();
-            timeOfLastPollErrMsgSent = currTime;
+    const int ready = ::poll(&pfd, 1, 100);  // Bound shutdown latency.
+    if (ready == 0) return 0;
+    if (ready < 0) {
+        if (errno == EINTR) return 0;
+        ++statistics_.io_errors; disconnect(); return -1;
+    }
+    // Drain any final readable bytes before handling a simultaneous hangup.
+    if (!(pfd.revents & POLLIN)) {
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            ++statistics_.io_errors; disconnect(); return -1;
         }
-        firstPollError = false;
-        return pollResult;
+        return 0;
     }
-
-    // actually performing the read
-    uint8_t tmp[DATAGRAM_SIZE];
-    ssize_t readResult = read(file_handle_, tmp, DATAGRAM_SIZE);
-    savedErrno         = errno;
-    if (readResult < 1) {   // error
-        if (firstReadError or (currTime - timeOfLastReadErrMsgSent) > 5) {
-            cout << "IMU Driver Serial Port read() error: "
-                 << errnoToString(savedErrno) << ". Attempting reconnect.\n";
-            reconnect();
-            timeOfLastReadErrMsgSent = currTime;
+    uint8_t bytes[SERIAL_READ_SIZE];
+    const size_t available = buffer_.capacity() - buffer_.size();
+    if (available == 0) return 0;  // Never overwrite unparsed bytes.
+    const ssize_t count = ::read(file_handle_, bytes, std::min(available, sizeof(bytes)));
+    if (count < 0) {
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        ++statistics_.io_errors; disconnect(); return -1;
+    }
+    if (count == 0) {
+        if (pfd.revents & (POLLHUP | POLLERR)) {
+            ++statistics_.io_errors; disconnect(); return -1;
         }
-        firstReadError = false;
-        return readResult;
+        return 0;
     }
-
-    // copy from temporary read buffer into circular buffer
-    for (int i = 0; i < DATAGRAM_SIZE and i < readResult; i++) {
-        buffer_.add(tmp[i]);
-    }
-
-    bytes_read_since_last_heartbeat += min((int)DATAGRAM_SIZE, (int)readResult);
-    double t       = get_time();
-    double elapsed = t - last_hearbeat;
-    if (elapsed > hearbeat_period) {
-        // cout << "Reading packets at "
-        //      << bytes_read_since_last_heartbeat / (DATAGRAM_SIZE * elapsed)
-        //      << " Hz\n";
-        bytes_read_since_last_heartbeat = 0;
-        last_hearbeat                   = t;
-    }
-
-    return readResult;
+    for (ssize_t i = 0; i < count; ++i) buffer_.add(bytes[i]);
+    statistics_.bytes_received += static_cast<uint64_t>(count);
+    return count;
 }

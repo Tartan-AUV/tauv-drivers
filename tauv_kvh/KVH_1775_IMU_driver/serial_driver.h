@@ -3,11 +3,16 @@
 #define SERIAL_DRIVER_H
 
 #include <string>
+#include <sys/types.h>
 
 #include "circular_buffer.h"
 #include "constants.h"
 
-#define buffSize (2 * DATAGRAM_SIZE)
+struct SerialStatistics {
+    uint64_t bytes_received = 0;
+    uint64_t connections = 0;
+    uint64_t io_errors = 0;
+};
 
 class SerialDriver {
    public:
@@ -21,18 +26,15 @@ class SerialDriver {
     void resetPath(const std::string& new_serial_port_name);
     bool isPortOpened() const;
     const std::string& getSerialPortName() const;
-    CircularBuffer<uint8_t, buffSize> buffer_;
+    CircularBuffer<uint8_t, SERIAL_BUFFER_SIZE> buffer_;
+    const SerialStatistics& statistics() const { return statistics_; }
 
    protected:
     std::string serial_port_name_;
     bool openedPort_ = false;
-    int file_handle_{};
+    int file_handle_ = -1;
+    SerialStatistics statistics_;
 
-    bool firstReadError = true;
-    bool firstPollError = true;
-
-    double timeOfLastReadErrMsgSent{};
-    double timeOfLastPollErrMsgSent{};
 };
 
 #endif   // SERIAL_DRIVER_H

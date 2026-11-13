@@ -1,10 +1,5 @@
-https://commandmasters.com/commands/ionice-linux/
+See ../README.md for configuration, diagnostics, and build instructions.
+See ../imu_config.txt for the coordinated IMU/host 500 Hz configuration.
 
-# disable intentional USB buffering:
-echo 0 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
-
-# Run with highes I/O priority:
-sudo ionice -c 1 -n 2 ./main
-
-
-this acheives 1000Hz!!
+For FTDI USB only, the usual minimum latency timer is 1 ms, not zero.
+Native Jetson UARTs do not use the FTDI latency timer.
