@@ -12,7 +12,7 @@ struct SensorData {
     Vector3 gyro;
     Vector3 accel;
 
-    uint32_t imu_timestamp_us;  // Format B: microsecond timestamp from IMU, wraps ~71 min
+    uint32_t imu_timestamp_us;  // Format B: microsecond timestamp from IMU, wraps every ~64.6 s (see fog_clock.hpp)
     int16_t temperature_raw;    // Format B: raw temperature value
 
     uint8_t counter;

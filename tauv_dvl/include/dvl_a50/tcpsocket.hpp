@@ -135,6 +135,13 @@ public:
         return recv(this->sock, tempBuffer, buffer_size, 0);
     }
 
+    // Reads whatever is available without blocking: >0 bytes read, 0 peer closed the
+    // connection, -1 with errno EAGAIN/EWOULDBLOCK when nothing is waiting.
+    ssize_t ReceiveAvailable(char *buf, size_t len)
+    {
+        return recv(this->sock, buf, len, MSG_DONTWAIT);
+    }
+
     void Send(char *tempBuffer)
     {
         send(this->sock, tempBuffer, strlen(tempBuffer), 0);

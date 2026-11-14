@@ -45,7 +45,9 @@
         # 3) 2: Use UTCTime from the host device.
         # Note: Ensure "UTC Time" or "Sample Time Fine" is selected in MT Manager under Device Settings > Output Configurations,
         # or you could also set 'enable_outputConfig: true' for once to configure output.
-        time_option: 0
+        # 2: the MTi clock is not synced to the Jetson (stamps were up to ~27 ms in the future and
+        # drifting); host time matches the FOG/DVL/depth stamps. Bench 2026-10-29: -0.4 ms from receipt.
+        time_option: 2
 
         # Logging Configuration
         # ---------------------
@@ -201,13 +203,15 @@
 
         # Enable or disable manual gyro bias estimation.
         # If enabled, specify the 'event_interval' and 'duration' in 'manual_gyro_bias_param'.
-        enable_manual_gyro_bias: false
+        enable_manual_gyro_bias: true
 
         # Parameters for manual gyro bias estimation:
         # - 'event_interval': Time in seconds between two consecutive invocations.
         # - 'duration': Time in seconds for which the MGBE process executes each time.
         #   The minimum value for 'event_interval' is 10 seconds, for 'duration' is 2 seconds.
-        manual_gyro_bias_param: [15, 5] # [event_interval, duration]
+        #   event_interval 0 = no periodic runs (a timer would also run while the sub is turning);
+        #   calibrate on demand with: ros2 topic pub --once /gyro_bias_trigger std_msgs/msg/Empty "{}"
+        manual_gyro_bias_param: [0, 6] # [event_interval, duration]
 
         # Monitoring MGBE Success:
         # To verify if MGBE was successful, use 'rostopic echo /status'.

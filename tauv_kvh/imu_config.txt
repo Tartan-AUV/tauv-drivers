@@ -13,8 +13,8 @@ Commands (type each line and press Enter):
   =outputfmt,B
   =baud,460800
   =dr,500
-  =angunits,RAD
-  =angfmt,RATE
+  =rotunits,RAD
+  =rotfmt,RATE
   =linunits,METERS
   =linfmt,ACCEL
   =filttype,G,BUTTER
@@ -26,8 +26,8 @@ What each command does:
   =outputfmt,B      Switch to Format B packets (40-byte, includes µs timestamp)
   =baud,460800      Baud rate (factory default is 921600; 460800 gives the Jetson UART more margin and supports up to 500 Hz)
   =dr,500           Output rate: 500 Hz (max at 460800 baud)
-  =angunits,RAD     Angular units: radians (not degrees)
-  =angfmt,RATE      Angular format: rate (rad/s), NOT delta-angle
+  =rotunits,RAD     Angular units: radians (not degrees). "=angunits" is not a valid command
+  =rotfmt,RATE      Angular format: rate (rad/s), NOT delta-angle (factory default is DELTA)
   =linunits,METERS  Linear units: m/s²
   =linfmt,ACCEL     Linear format: acceleration, NOT delta-velocity
   =filttype,G,BUTTER Gyro filter: Butterworth (linear phase, better for integration)

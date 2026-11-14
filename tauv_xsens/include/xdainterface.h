@@ -70,7 +70,8 @@ private:
 	bool handleError(std::string error);
 	void declareCommonParameters();
 	bool configureSensorSettings();
-	bool manualGyroBiasEstimation(uint16_t sleep, uint16_t duration);
+	// source ("startup", "trigger", "periodic") is only used in the log lines
+	bool manualGyroBiasEstimation(uint16_t sleep, uint16_t duration, const std::string &source);
 
 	XsControl *m_control;
 	XsDevice *m_device;
@@ -81,6 +82,8 @@ private:
 	rclcpp::Node::SharedPtr m_node; 
 	// Timer for Manual Gyro Bias Estimation
 	rclcpp::TimerBase::SharedPtr m_manualGyroBiasTimer;
+	// One-shot timer that logs when a calibration window ends
+	rclcpp::TimerBase::SharedPtr m_manualGyroBiasDoneTimer;
 	rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr m_manualGyroBiasSubscriber;
 	rclcpp::Subscription<mavros_msgs::msg::RTCM>::SharedPtr m_rtcmSubscription;
 };

@@ -7,6 +7,9 @@
 
 #include "dvl_a50/dvl-sensor.hpp"
 
+#include <cerrno>
+#include <cstring>
+
 namespace dvl_sensor {
 
 DVL_A50::DVL_A50() : Node("dvl_a50_node") {
@@ -15,7 +18,8 @@ DVL_A50::DVL_A50() : Node("dvl_a50_node") {
     auto qos =
         rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, qos_profile.depth), qos_profile);
 
-    timer_receive = this->create_wall_timer(std::chrono::milliseconds(50),
+    // Polls the socket without blocking; every complete line is handled each tick.
+    timer_receive = this->create_wall_timer(std::chrono::milliseconds(5),
                                             std::bind(&DVL_A50::handle_receive, this));
 
     // Publishers
@@ -34,93 +38,120 @@ DVL_A50::DVL_A50() : Node("dvl_a50_node") {
     this->declare_parameter<std::string>("velocity_frame_id", "dvl_A50/velocity_link");
     this->declare_parameter<std::string>("position_frame_id", "dvl_A50/position_link");
     this->declare_parameter<bool>("acoustic_enabled", false);
+    // Stamp velocity reports at the ping (receive time minus the DVL's own
+    // transmission - validity delay, ~110 ms) instead of at arrival. Only useful
+    // with the EKF's smooth_lagged_data, so off by default.
+    stamp_at_ping_ = this->declare_parameter<bool>("stamp_at_ping", false);
 
     velocity_frame_id = this->get_parameter("velocity_frame_id").as_string();
     position_frame_id = this->get_parameter("position_frame_id").as_string();
     ip_address = this->get_parameter("dvl_ip_address").as_string();
+    acoustic_enabled_ = this->get_parameter("acoustic_enabled").as_bool();
     RCLCPP_INFO(get_logger(), "IP_ADDRESS: '%s'", ip_address.c_str());
 
     //--- TCP/IP SOCKET ----
     tcpSocket = new TCPSocket((char*)ip_address.c_str(), 16171);
 
-    if (tcpSocket->Create() < 0) RCLCPP_ERROR(get_logger(), "Error creating the socket");
-
-    tcpSocket->SetRcvTimeout(400);
-    std::string error;
-
-    int error_code = 0;
-    // int fault = 1;
-
-    first_time = std::chrono::steady_clock::now();
-    first_time_error = first_time;
-    while (fault != 0) {
-        fault = tcpSocket->Connect(5000, error, error_code);
-        if (error_code == 114) {
-            RCLCPP_WARN(get_logger(), "Is the sensor on? error_code: %d", error_code);
-            usleep(2000000);
-            std::chrono::steady_clock::time_point current_time_error =
-                std::chrono::steady_clock::now();
-            double dt =
-                std::chrono::duration<double>(current_time_error - first_time_error).count();
-            if (dt >= 78.5)  // Max time to set up
-            {
-                fault = -10;
-                break;
-            }
-        } else if (error_code == 103) {
-            RCLCPP_WARN(get_logger(),
-                        "No route to host, DVL might be booting?: error_code: %d",
-                        error_code);
-            usleep(2000000);
-        }
-    }
-
-    if (fault == -10) {
-        tcpSocket->Close();
-        RCLCPP_ERROR(get_logger(), "Turn the sensor on and try again!");
-    } else
-        RCLCPP_INFO(get_logger(), "DVL-A50 connected!");
-
-    bool acoustic_enabled_param = this->get_parameter("acoustic_enabled").as_bool();
-    this->set_json_parameter("acoustic_enabled", acoustic_enabled_param ? "true" : "false");
-    usleep(2000);
+    // If the DVL is not reachable yet, the receive timer keeps retrying.
+    tryConnect();
 }
 
 DVL_A50::~DVL_A50() {
-    this->set_json_parameter("acoustic_enabled", "false");
+    if (connected_) {
+        this->set_json_parameter("acoustic_enabled", "false");
+    }
     tcpSocket->Close();
     delete tcpSocket;
 }
 
+bool DVL_A50::tryConnect() {
+    last_connect_attempt_ = std::chrono::steady_clock::now();
+    tcpSocket->Close();
+    if (tcpSocket->Create() < 0) {
+        RCLCPP_ERROR(get_logger(), "Error creating the socket");
+        return false;
+    }
+    std::string error;
+    int error_code = 0;
+    if (tcpSocket->Connect(1000, error, error_code) != 0) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                             "DVL not reachable at %s (%s), retrying every 2 s",
+                             ip_address.c_str(), error.c_str());
+        return false;
+    }
+    connected_ = true;
+    fault = 0;
+    rx_buffer_.clear();
+    RCLCPP_INFO(get_logger(), "DVL-A50 connected!");
+    this->set_json_parameter("acoustic_enabled", acoustic_enabled_ ? "true" : "false");
+    return true;
+}
+
+void DVL_A50::dropConnection(const std::string& reason) {
+    RCLCPP_ERROR(get_logger(), "DVL connection lost (%s), reconnecting", reason.c_str());
+    connected_ = false;
+    fault = 1;
+    tcpSocket->Close();
+}
+
 void DVL_A50::handle_receive() {
-    char* tempBuffer = new char[1];
-
-    // tcpSocket->Receive(&tempBuffer[0]);
-    std::string str;
-
-    if (fault == 0) {
-        while (tempBuffer[0] != '\n') {
-            if (tcpSocket->Receive(tempBuffer) != 0) str = str + tempBuffer[0];
+    if (!connected_) {
+        if (std::chrono::steady_clock::now() - last_connect_attempt_ >= std::chrono::seconds(2)) {
+            tryConnect();
         }
+        return;
+    }
 
-        try {
-            json_data = json::parse(str);
-
-            if (json_data.contains("altitude")) {
-                this->publish_vel_trans_report();
-            } else if (json_data.contains("pitch")) {
-                this->publish_dead_reckoning_report();
-            } else if (json_data.contains("response_to")) {
-                if (json_data["response_to"] == "set_config" ||
-                    json_data["response_to"] == "calibrate_gyro" ||
-                    json_data["response_to"] == "reset_dead_reckoning")
-                    this->publish_command_response();
-                else if (json_data["response_to"] == "get_config")
-                    this->publish_config_status();
-            }
-        } catch (std::exception& e) {
-            std::cout << "Exception: " << e.what() << std::endl;
+    char buf[4096];
+    while (true) {
+        const ssize_t n = tcpSocket->ReceiveAvailable(buf, sizeof(buf));
+        if (n > 0) {
+            rx_buffer_.append(buf, static_cast<size_t>(n));
+            continue;
         }
+        if (n == 0) {
+            dropConnection("closed by the DVL");
+            return;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            break;
+        }
+        dropConnection(strerror(errno));
+        return;
+    }
+
+    size_t pos;
+    while ((pos = rx_buffer_.find('\n')) != std::string::npos) {
+        const std::string line = rx_buffer_.substr(0, pos);
+        rx_buffer_.erase(0, pos + 1);
+        if (!line.empty()) {
+            handle_line(line);
+        }
+    }
+    // A sane report is well under 4 kB; drop runaway garbage without a newline.
+    if (rx_buffer_.size() > 65536) {
+        rx_buffer_.clear();
+    }
+}
+
+void DVL_A50::handle_line(const std::string& line) {
+    try {
+        json_data = json::parse(line);
+
+        if (json_data.contains("altitude")) {
+            this->publish_vel_trans_report();
+        } else if (json_data.contains("pitch")) {
+            this->publish_dead_reckoning_report();
+        } else if (json_data.contains("response_to")) {
+            if (json_data["response_to"] == "set_config" ||
+                json_data["response_to"] == "calibrate_gyro" ||
+                json_data["response_to"] == "reset_dead_reckoning")
+                this->publish_command_response();
+            else if (json_data["response_to"] == "get_config")
+                this->publish_config_status();
+        }
+    } catch (std::exception& e) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Bad DVL message: %s", e.what());
     }
 }
 
@@ -135,12 +166,24 @@ void DVL_A50::publish_vel_trans_report() {
     dvl_msgs::msg::DVLBeam beam3;
     dvl_msgs::msg::DVL dvl;
 
-    dvl.header.stamp = Node::now();
+    const rclcpp::Time received = Node::now();
+    dvl.header.stamp = received;
     dvl.header.frame_id = velocity_frame_id;
 
     dvl.time = double(json_data["time"]);
     dvl.time_of_validity = json_data["time_of_validity"].get<int64_t>();
     dvl.time_of_transmission = json_data["time_of_transmission"].get<int64_t>();
+    if (stamp_at_ping_) {
+        // Both fields come from the DVL clock, so their difference (~110 ms) is the
+        // ping-to-report delay regardless of whether that clock is synced.
+        const int64_t delay_us = dvl.time_of_transmission - dvl.time_of_validity;
+        if (delay_us >= 0 && delay_us < 1000000) {
+            dvl.header.stamp = received - rclcpp::Duration::from_nanoseconds(delay_us * 1000);
+        } else {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                                 "Implausible DVL report delay %ld us, stamping at receipt", delay_us);
+        }
+    }
 
     dvl.velocity.x = double(json_data["vx"]);
     dvl.velocity.y = double(json_data["vy"]);
