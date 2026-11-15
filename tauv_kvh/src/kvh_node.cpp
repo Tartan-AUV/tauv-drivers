@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -59,6 +61,16 @@ class KvhNode : public rclcpp::Node {
             RCLCPP_INFO(get_logger(), "Using stored FOG gyro bias (deg/h, sensor frame): %.2f %.2f %.2f%s",
                         stored_bias[0], stored_bias[1], stored_bias[2],
                         earth_rate_compensation_ ? " + Earth-rate compensation" : "");
+        }
+
+        // Optional cache for the startup bias: once measured it is written here, and later
+        // launches within bias_file_max_age_hours reuse it instead of measuring again (so the
+        // stack can be restarted in the water without holding still). Delete the file to
+        // force a new measurement. The FOG bias shifts after a FOG power cycle.
+        bias_file_ = declare_parameter<std::string>("bias_file", "");
+        const double max_age_h = declare_parameter<double>("bias_file_max_age_hours", 8.0);
+        if (startup_bias_seconds_ > 0.0 && !bias_file_.empty()) {
+            loadBiasFile(max_age_h);
         }
 
         // Independent frames
@@ -291,12 +303,56 @@ class KvhNode : public rclcpp::Node {
             RCLCPP_INFO(get_logger(), "FOG startup gyro bias over %lu samples (deg/h): %.2f %.2f %.2f, max std %.4f deg/s",
                         bias_n_, mean.x() * to_deg_h, mean.y() * to_deg_h, mean.z() * to_deg_h,
                         max_std * 180.0 / M_PI);
+            saveBiasFile();
         } else {
             RCLCPP_WARN(get_logger(), "FOG startup bias: vehicle moving (max std %.4f deg/s), retrying",
                         max_std * 180.0 / M_PI);
         }
         bias_sum_ = bias_sq_ = tf2::Vector3(0, 0, 0);
         bias_n_ = 0;
+    }
+
+    // File format: one line "bias_x bias_y bias_z unix_time" (rad/s, sensor frame).
+    void loadBiasFile(double max_age_h) {
+        std::ifstream in(bias_file_);
+        double x, y, z, saved;
+        if (!(in >> x >> y >> z >> saved) || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+            RCLCPP_INFO(get_logger(), "No usable FOG bias file at %s; measuring for %.0f s (keep still)",
+                        bias_file_.c_str(), startup_bias_seconds_);
+            return;
+        }
+        const double age_h = (static_cast<double>(std::time(nullptr)) - saved) / 3600.0;
+        if (age_h < 0.0 || age_h > max_age_h) {
+            RCLCPP_WARN(get_logger(), "FOG bias file %s is %.1f h old (limit %.1f h); measuring again for %.0f s (keep still)",
+                        bias_file_.c_str(), age_h, max_age_h, startup_bias_seconds_);
+            return;
+        }
+        gyro_bias_ = tf2::Vector3(x, y, z);
+        bias_done_ = true;
+        const double to_deg_h = 180.0 / M_PI * 3600.0;
+        RCLCPP_INFO(get_logger(), "Loaded FOG startup gyro bias from %s (%.0f min old, deg/h): %.2f %.2f %.2f "
+                                  "- delete the file to measure again",
+                    bias_file_.c_str(), age_h * 60.0, x * to_deg_h, y * to_deg_h, z * to_deg_h);
+    }
+
+    void saveBiasFile() {
+        if (bias_file_.empty()) return;
+        const std::string tmp = bias_file_ + ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::trunc);
+            out.precision(12);
+            out << gyro_bias_.x() << " " << gyro_bias_.y() << " " << gyro_bias_.z() << " "
+                << static_cast<long long>(std::time(nullptr)) << "\n";
+            if (!out) {
+                RCLCPP_WARN(get_logger(), "Could not write FOG bias file %s", tmp.c_str());
+                return;
+            }
+        }
+        if (std::rename(tmp.c_str(), bias_file_.c_str()) != 0) {
+            RCLCPP_WARN(get_logger(), "Could not save FOG bias file %s", bias_file_.c_str());
+            return;
+        }
+        RCLCPP_INFO(get_logger(), "Saved FOG startup gyro bias to %s", bias_file_.c_str());
     }
 
     // Every 5 s: WARN if anything went wrong in the window, otherwise an INFO
@@ -389,6 +445,7 @@ class KvhNode : public rclcpp::Node {
     double startup_bias_seconds_{0.0};
     double startup_bias_max_std_{0.0};
     bool bias_done_{false};
+    std::string bias_file_;
     tf2::Vector3 gyro_bias_{0, 0, 0};
     tf2::Vector3 bias_sum_{0, 0, 0};
     tf2::Vector3 bias_sq_{0, 0, 0};
