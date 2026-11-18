@@ -16,9 +16,14 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray,String
 import dronecan
 import time
+<<<<<<< Updated upstream
 import math
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+=======
+import os
+>>>>>>> Stashed changes
 import numpy as np
+from ament_index_python.packages import get_package_share_directory
 from tauv_dronecan.rpm_to_gain import rpm_to_gain
 from tauv_dronecan.mapping import mapping
 
@@ -38,7 +43,11 @@ class CANDriver(Node):
         self.declare_parameter('BIGARM', True)
         self.declare_parameter('telemetry_rate_hz', 6.0)
         self.declare_parameter('discovery_time_sec', 5.0)
-        self.declare_parameter('dna_db_path', '/tauv-mono/ros_ws/src/tauv_drivers/tauv_dronecan/dronecan_dna.db')
+        default_dna_db_path = os.path.join(
+            get_package_share_directory('tauv_dronecan'),
+            'dronecan_dna.db'
+        )
+        self.declare_parameter('dna_db_path', default_dna_db_path)
         # Undervoltage protection, on the average pack voltage reported by the ESCs.
         self.declare_parameter('startup_voltage_min_v', 14.0)
         self.declare_parameter('undervoltage_cutoff_v', 12.3)
